@@ -6,7 +6,6 @@
 # User-specific stuff:
 .idea/
 *.bk
-test*
 
 # CMake
 cmake-build-debug/
