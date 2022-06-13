@@ -8,11 +8,16 @@ from boto3 import resource
 from mypy_boto3_dynamodb.service_resource import Table
 
 
-from dynamojo.db import IndexMap, get_indexes, IndexList, Lsi, Gsi, TableIndex
+from dynamojo.db import IndexMap, get_indexes, IndexList
 from dynamojo.base import ObjectBase
-from dynamojo.exceptions import IndexNotFoundError
 from boto3.dynamodb.conditions import Key
 
+
+###
+#
+# This is an example class
+#
+##
 TABLE = resource("dynamodb").Table(environ["DYNAMODB_TABLE"])
 
 
@@ -55,6 +60,9 @@ class Foo(ObjectBase):
     super().__init__(**kwargs)
 
 
+###
+#  Using the class we just made
+###
 foo = Foo(
   notificationType="TEST_ALARM_TYPE",
   notificationName="notification name test",
@@ -63,44 +71,94 @@ foo = Foo(
   message="Test message"
 )
 foo.save()
-condition = Key("accountId").eq("MYACCOUNT_12345") & Key("typeNameAndDateSearch").gt("0")
-res = Foo.query(condition=condition)
-print(res)
-#print(Foo().get_index().name)
-exit()
-foo.save()
 
-#foo.save()
-#print(Foo.fetch("foo", "Foo~foo"))
-#res = Foo.query(indexes.table.begins_with("foo", "Foo~"))
-#print(res)
+# Parent class will automatically detect that we are using attributes mapped to the table index
+condition = Key("accountId").eq("MYACCOUNT_12345") & Key("typeNameAndDateSearch").begins_with("TEST_ALARM_TYPE")
+res = Foo.query(condition)
+print(res)
+
+# Parent class will automatically detect we are using gsi0
+condition = Key("notificationType").eq("TEST_ALARM_TYPE") & Key("dateTime").gt("0")
+res = Foo.query(condition)
+print(res)
+
+
+###
+#  This library is very opinionated about how the table's indexes should be structured. Below is Terraform that shows the
+#  correct way to set up the table. Index keys are never referenced directly when using the table. Rely on IndexMap for that.
+#  Since LSI's can only be created at table creation time, and all indexes cost nothing if not used, we go ahead and create
+#  all of the indexes that AWS will allow us to when the table is created.
+##
 
 """
+resource "aws_dynamodb_table" "test_table" {
+  name         = "test-dynamojo"
+  hash_key     = "pk"
+  range_key    = "sk"
+  billing_mode = "PAY_PER_REQUEST"
 
-from abc import ABC, abstractproperty
-class Base(UserDict, ABC):
+  # LSI attributes
+  dynamic "attribute" {
+    for_each = range(5)
 
-  @abstractproperty
-  def _required_fields(self):
-    pass
+    content {
+      name = "lsi${attribute.value}_sk"
+      type = "S"
+    }
+  }
 
-class Foo(Base):
+  # GSI pk attributes
+  dynamic "attribute" {
+    for_each = range(20)
 
-  def _required_fields(self):
-    return []
+    content {
+      name = "gsi${attribute.value}_pk"
+      type = "S"
+    }
+  }
 
-  def __init__(self, **kwargs):
-    super().__init__(**kwargs)
-    self.foo = "bar"
-    self.data["data_item"] = "some data"
+  # GSI sk attributes
+  dynamic "attribute" {
+    for_each = range(20)
 
-  def __getattribute__(self, __name: str):
-    try:
-      return super().__getattribute__(__name)
-    except AttributeError:
-      return self.data[__name]
+    content {
+      name = "gsi${attribute.value}_sk"
+      type = "S"
+    }
+  }
 
+  attribute {
+    name = "pk"
+    type = "S"
+  }
 
-foo = Foo()
-print(foo.data_item)
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  # GSI's
+  dynamic "global_secondary_index" {
+    for_each = range(20)
+
+    content {
+      name            = "gsi${global_secondary_index.value}"
+      hash_key        = "gsi${global_secondary_index.value}_pk"
+      range_key       = "gsi${global_secondary_index.value}_sk"
+      projection_type = "ALL"
+    }
+  }
+
+  # LSI's
+  dynamic "local_secondary_index" {
+    for_each = range(5)
+
+    content {
+      name            = "lsi${local_secondary_index.value}"
+      range_key       = "lsi${local_secondary_index.value}_sk"
+      projection_type = "ALL"
+    }
+  }
+}
+
 """
