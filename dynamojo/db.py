@@ -24,11 +24,9 @@ class Index:
         partitionkey: str = None,
     ):
 
-        self.__partitionkey = Key(partitionkey) if partitionkey else None
-        self.__sortkey = Key(sortkey) if sortkey else None
+        self.__partitionkey = partitionkey if partitionkey else None
+        self.__sortkey = sortkey if sortkey else None
         self.__name = name
-        self.__partitionkey_name = partitionkey
-        self.__sortkey_name = sortkey
         self.is_composit = partitionkey and sortkey
         
     @property
@@ -47,84 +45,17 @@ class Index:
         return isinstance(self, TableIndex)
     
     @property
-    def partitionkey_name(self) -> str:
-        """ Attribute name of the partition key"""
-        return self.__partitionkey_name
-    
-    @property
-    def sortkey_name(self) -> str:
-        """ Attribute name of the sort key"""
-        return self.__sortkey_name
-
-    @property
     def name(self) -> str:
         """ Name of the index """
         return self.__name
-
-    def _add_expression_attributes(self, expression: ConditionBase) -> ConditionBase:
-      expression.name = self.name
-      expression.table_index = self.table_index
-      return expression
-
-    def eq(self, pk, sk=None) -> ConditionBase:
-      if sk and not self.sortkey:
-        raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-      expression = self.partitionkey.eq(pk)
-      if sk:
-          expression = expression & self.sortkey.eq(sk)
-      return self._add_expression_attributes(expression)
-
-    def begins_with(self, pk, sk) -> ConditionBase:
-        if not self.sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
- 
-        expression = self.partitionkey.eq(pk) & self.sortkey.begins_with(sk)
-        return self._add_expression_attributes(expression)
-
-    def between(self, pk, start, end) -> ConditionBase:
-        if not self.__sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-        expression = self.partitionkey.eq(
-            pk) & self.sortkey.between(start, end)
-        return self._add_expression_attributes(expression)
-
-    def gt(self, pk, sk) -> ConditionBase:
-        if not self.__sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-        expression = self.partitionkey.eq(pk) & self.sortkey.gt(sk)
-        return self._add_expression_attributes(expression)
-
-    def gte(self, pk, sk) -> ConditionBase:
-        if not self.__sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-        expression = self.partitionkey.eq(pk) & self.sortkey.gte(sk)
-        return self._add_expression_attributes(expression)
-
-    def lt(self, pk, sk) -> ConditionBase:
-        if not self.__sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-        expression = self.partitionkey.eq(pk) & self.sortkey.lt(sk)
-        return self._add_expression_attributes(expression)
-
-    def lte(self, pk, sk) -> ConditionBase:
-        if not self.__sortkey:
-          raise ValueError(f"Index {self.name} does not contain a sortkey")
-
-        expression = self.partitionkey.eq(pk) & self.sortkey.lte(sk)
-        return self._add_expression_attributes(expression)
 
 
 class Gsi(Index):
     def __init__(
         self,
         name: str,
-        sortkey: str,
-        partitionkey: str = None
+        partitionkey: str,
+        sortkey: str = None
     ):
         super().__init__(
             name=name,
@@ -160,10 +91,9 @@ class TableIndex(Index):
 
 
 class IndexList(UserDict):
-    data = {}
     def __init__(self, *args: List[Index]) -> None:
-        has_table = False
         super().__init__()
+        has_table = False
         for index in args:
             if not isinstance(index, Index):
                 raise TypeError("Invalid type for Index")
@@ -172,11 +102,8 @@ class IndexList(UserDict):
                     raise ValueError("An IndexList object can only have one TableIndex")
                 has_table = True
 
-            self[index.name] = index
-
-    def __setitem__(self, key, value):
-        super().__setattr__(key, value)
-        return super().__setitem__(key, value)
+            super().__setattr__(index.name, index)
+            self.data[index.name] = index
 
 
 def get_indexes(table_name):
@@ -184,6 +111,7 @@ def get_indexes(table_name):
     desc = CLIENT.describe_table(TableName=table_name)["Table"]
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])
+
     table_list = [{
         "IndexName": "table",
         "KeySchema": desc["KeySchema"]
@@ -197,7 +125,7 @@ def get_indexes(table_name):
             args["name"] = index["IndexName"]
 
             for attr in index["KeySchema"]:
-                if attr["KeyType"] == "HASH":
+                if attr["KeyType"] == "HASH" and index_type != Lsi:
                     args["partitionkey"] = attr["AttributeName"]
                 elif attr["KeyType"] == "RANGE":
                     args["sortkey"] = attr["AttributeName"]
@@ -227,10 +155,10 @@ class IndexMap:
     ):
         if isinstance(index, Lsi) and partitionkey:
             raise ValueError(
-                "Lsi indexes cannot map to the partition key. Use index with type TableMap to map the partition key"
+                "Lsi indexes only specify a sort key and use the table's partition key"
             )
-        
-        if index.partitionkey and not partitionkey:
+
+        elif index.partitionkey and not partitionkey:
             raise ValueError(f"Partition key required for index {index.name}")
 
         if index.sortkey and not sortkey:
@@ -246,3 +174,4 @@ class IndexMap:
             self.sortkey = sortkey
 
         self.index = index
+

@@ -1,26 +1,30 @@
-class RbacManagerException(Exception):
+class DynamodbException(Exception):
   pass
 
 
-class RequiredAttributeError(RbacManagerException):
+class RequiredAttributeError(DynamodbException):
   pass
 
 
-class StaticAttributeError(RbacManagerException):
+class StaticAttributeError(DynamodbException):
   pass
 
 
-class UnknownAttributeError(RbacManagerException):
+class UnknownAttributeError(DynamodbException):
   pass
 
 
-class ProtectedAttributeError(RbacManagerException):
+class ProtectedAttributeError(DynamodbException):
   pass
 
 
-class ItemNotFoundError(RbacManagerException):
+class ItemNotFoundError(DynamodbException):
   pass
 
 
-class NotAuthorized(RbacManagerException):
+class NotAuthorized(DynamodbException):
+  pass
+
+
+class IndexNotFoundError(DynamodbException):
   pass

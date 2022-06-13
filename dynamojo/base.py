@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 from collections import UserDict
-from os import environ
+from logging import getLogger
 from typing import (
   Any,
+  Dict,
   List
 )
 
 from boto3.session import Session
+from mypy_boto3_dynamodb.service_resource import Table
 from boto3.dynamodb.conditions import (
   AttributeBase,
-  ConditionBase
+  ConditionBase,
+  Key
 )
 
 from .db import (
@@ -22,10 +25,13 @@ from .exceptions import (
   ProtectedAttributeError,
   RequiredAttributeError,
   StaticAttributeError,
-  UnknownAttributeError
+  UnknownAttributeError,
+  IndexNotFoundError
 )
 
-class ObjectBase(UserDict):
+from abc import ABC, abstractproperty
+
+class ObjectBase(UserDict, ABC):
   """
   Provides a base class for objects that will be stored in Dynamodb. This class, when used with the db submodule
   allows for writing classes that require only the most basic of definition to have all the methods required to operate.
@@ -65,59 +71,63 @@ class ObjectBase(UserDict):
         ```
   """
 
-  __TABLE = Session().resource("dynamodb").Table(environ.get("DYNAMODB_TABLE"))
+  @abstractproperty
+  def _table(self) -> Table:
+    pass
 
-  print(type(__TABLE))
   # Attributes that cannot be changed once set
-  __static_attributes: List[str]  = []
+  _static_attributes: List[str] = []
 
   # Attributes that will raise an exception on save if not set
-  __required_attributes: List[str] = []
+  _required_attributes: List[str] = []
+
+  # Attributes that are optional
+  _optional_attributes: List[str] = []
 
   # Cannot be changed by instances directly. All attributes on indexes get pushed into this list
-  __protected_attributes: List[str] = [
-    "__typename"
-  ]
+  __protected_attributes: List[str] = []
 
-  # A list of IndexObjects that represent indexes in the table
-  INDEXES: IndexList
+  # A dictionary in the form of {"<target attribute>": ["source_att_one", "source_att_two"]} where <target_attribute> will
+  # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
+  # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
+  # attributes.
+  compound_properties: Dict[str, List[str]] = {}
   
-  # Internally used by UserDict
-  data: dict = {}
-
-  __INDEX_MAP = {}
-  __MAPPED_ATTRIBUTES = []
-  __initialized = False
+  # A list of IndexObjects that represent indexes in the table
+  @abstractproperty
+  def indexes(self) -> IndexList:
+    pass
 
   # All subclasses must implement this tuple/list of IndexMap items, which will cause mapped attributes to
   # be automatically duplicated into indexes. Must contain at minimum a IndexMap item for Indexes.table
-  INDEX_MAP: List[IndexMap]
+  @abstractproperty
+  def index_map(self) -> List[IndexMap]:
+    pass
+
+  data = {}
+  _MAPPED_ATTRIBUTES = []
+  __initialized = False
 
   def __init__(
     self,
-    required_attributes: List[str],
-    static_attributes: List[str],
-    optional_attributes: List[str],
     from_db: bool = False,
     **kwargs: dict
   ) -> None:
 
+    super().__init__()
+
+    self._INDEX_MAP = {}
+
     # Lets us know to allow setting protected attributes since they came from the db and not user input
     self.from_db = from_db
 
-    if not hasattr(self, "INDEXES"):
-      raise AttributeError("Classes must declare a list of indexes as `cls.INDEXES`")
-
-    if not hasattr(self, "INDEX_MAP"):
-      raise AttributeError("Classes must declare `cls.INDEX_MAP`")
-
     self.TABLE_INDEX = [
-      index for _, index in self.INDEXES.items()
+      index for _, index in self.indexes.items()
       if isinstance(index, TableIndex)
     ][0]
 
     if not bool([
-        x for x in self.INDEX_MAP
+        x for x in self.index_map
         if isinstance(x.index, TableIndex)
       ]):
       raise AttributeError(
@@ -126,31 +136,11 @@ class ObjectBase(UserDict):
 
     self.make_index_map()
 
-    self.__protected_attributes += list(self.__INDEX_MAP.keys())
-    self.__protected_attributes = list(set(self.__protected_attributes))   
-    self.__optional_attributes = optional_attributes
-
-    self.__required_attributes = list(set([
-      *self.__required_attributes,
-      *required_attributes
-    ]))
-
-    self.__static_attributes = list(set([
-      *self.__static_attributes,
-      *static_attributes
-    ]))
-
-    self.__all_attributes = list(set([
-      *optional_attributes,
-      *self.__static_attributes,
-      *self.__required_attributes,
-      *self.__protected_attributes
-    ]))
+    self.__protected_attributes += list(self._INDEX_MAP.keys())
 
     # After setting self.__initialized to True then any attributes we update will have their corresponding indexes updated
     self.__initialized = True
 
-    super().__init__()
 
     self.__force_setattr(
       "objectType",
@@ -172,39 +162,39 @@ class ObjectBase(UserDict):
     """
     new_map = {}
 
-    for index_item in self.INDEX_MAP:
+    for index_item in self.index_map:
       if sk_att := index_item.sortkey:
-        new_map[index_item.index.sortkey_name] = sk_att
-      if pk_att := index_item.partitionkey:
-        new_map[index_item.index.partitionkey_name] = pk_att
+        new_map[index_item.index.sortkey] = sk_att
+      if hasattr(index_item, "partitionkey") and index_item.partitionkey is not None:
+        new_map[index_item.index.partitionkey] = index_item.partitionkey
 
     for attr in new_map.values():
       if isinstance(attr, str):
-        self.__required_attributes.append(attr)
+        self._required_attributes.append(attr)
       else:
-        self.__required_attributes += attr
-    self.__required_attributes += list(new_map.keys())
+        self._required_attributes += attr
+ 
+    self._required_attributes += list(new_map.keys())
     self.__protected_attributes += list(new_map.keys())
 
-    self.__INDEX_MAP.update(new_map)
+    self._INDEX_MAP.update(new_map)
 
-    self.__MAPPED_ATTRIBUTES += list(new_map.values())
-
+    self._MAPPED_ATTRIBUTES += list(new_map.values())
+  
   @property
   def prefix(self) -> str:
     return f"{self.__class__.__name__}~"
 
   @property
-  def required_attributes(self) -> List[str]:
-    return self.__required_attributes
-  
-  @property
-  def static_attributes(self) -> List[str]:
-    return self.__static_attributes
-  
-  @property
-  def all_attributes(self) -> List[str]:
-    return self.__all_attributes
+  def _all_attributes(self) -> List[str]:
+    return list(set([
+      *self._static_attributes,
+      *self._required_attributes,
+      *self.__protected_attributes,
+      *self._optional_attributes,
+      "objectType",
+      "__typename"
+    ]))
 
   @property
   def protected_attributes(self) -> List[str]:
@@ -212,22 +202,21 @@ class ObjectBase(UserDict):
 
   @property
   def optional_attributes(self) -> List[str]:
-    return self.__optional_attributes
+    return self._optional_attributes
 
   @classmethod
   def fetch(cls, pk: str, sk: str = None) -> UserDict:
     """
     Returns an item from the database
     """
-
     key={
-      cls.INDEXES.table.partitionkey_name: pk
+      cls.indexes.table.partitionkey: pk
     }
 
-    if cls.INDEXES.table.sortkey:
-      key[cls.INDEXES.table.sortkey_name] = sk
+    if cls.indexes.table.sortkey:
+      key[cls.indexes.table.sortkey] = sk
 
-    item = cls.__TABLE.get_item(
+    item = cls._table.get_item(
       Key=key
     ).get("Item")
  
@@ -246,18 +235,20 @@ class ObjectBase(UserDict):
     and all indexes are updated.
     """
     if (
-      name in self.static_attributes
+      name in self._static_attributes
       and name in self.data
       and value != self.data[name]
     ):
       raise StaticAttributeError(f"Attribute {name} is static and cannot be modified directly once set")
 
-    if name in self.protected_attributes and not self.from_db:
+    if name in self.__protected_attributes and not self.from_db:
       raise ProtectedAttributeError(
           f"Attribute {name} is reserved and cannot be set directly")
 
-    super().__setitem__(name, value)
+    if name in [*self._required_attributes, *self._optional_attributes]:
+      super().__setitem__(name, value)
     super().__setattr__(name, value)
+
     # Important that this comes last
     self.__update_indexes(name, value)
 
@@ -268,49 +259,45 @@ class ObjectBase(UserDict):
     """
     if not (
       self.__initialized
-      and name in self.__MAPPED_ATTRIBUTES
+#      and name in self._MAPPED_ATTRIBUTES
     ):
+      
       return
 
     if value is None:
       raise ValueError(f"Invalid value for '{name}'. Attributes mapped to indexes cannot be None")
 
-    for index_key, attribute in self.__INDEX_MAP.items():
-      if (
-        isinstance(attribute, str)
-        and name == attribute
-      ) or (
-        isinstance(attribute, (list, tuple, set))
-        and name in attribute
-      ):
-        if isinstance(attribute, (list, tuple, set)):
-          attributes = attribute
-          final_value = "~".join([
-            self.get(attribute, "") for attribute in attributes
-          ])
-        else:
-          final_value = value
-        
-        self.__force_setattr(index_key, final_value, update_index=False)
+    for index_key, attribute in self._INDEX_MAP.items():
+      if name == attribute:
+        self.__force_setattr(index_key, value, update_index=False)
 
- 
-  def __getattribute__(self, name: str) -> Any:
-    try:
-      return super().__getattribute__(name)
-    except NameError:
-      return None
+    self.set_compound_attributes(name)
+  #def __getattribute__(self, name: str) -> Any:
+  #  try:
+  #    return super().__getitem__(name)
+  #  except (NameError, KeyError):
+  #    return super().__getattribute__(name)
+
+  def set_compound_attributes(self, name):
+    for target, attributes in self.compound_attributes.items():
+      if name in attributes:
+        val = "~".join([
+          self.get(attribute, "") for attribute in attributes
+        ])
+        self.__force_setattr(target, val)
+
 
   def validate_attributes(self) -> None:
     """
     Validates that required attributes are set and that there are no unknown attributes that
     have leaked into self.data
     """
-    for att in self.required_attributes:
+    for att in self._required_attributes:
       if not self.get(att):
         raise RequiredAttributeError(f"Missing required attribute {att}")
 
     for att in self.data:
-      if att not in self.all_attributes:
+      if att not in self._all_attributes:
         raise UnknownAttributeError(
             f"Unknown attribute {att} for object of type {self.objectType}")
 
@@ -329,7 +316,7 @@ class ObjectBase(UserDict):
     """
     self.validate_attributes()
 
-    self.__TABLE.put_item(Item=self.data)
+    self._table.put_item(Item=self.data)
 
     return self
 
@@ -345,6 +332,7 @@ class ObjectBase(UserDict):
     """
     Returns a list of all objects of a certain type, optionally filtered by `filter`
     """
+    
     opts = {
       "index": cls.INDEXES.gsi0.eq(cls.__name__)
     }
@@ -357,7 +345,8 @@ class ObjectBase(UserDict):
   @classmethod
   def query(
     cls,
-    index: ConditionBase,
+    condition: ConditionBase,
+    index: Index = None,
     filter: AttributeBase = None,
     limit: int = 1000,
     paginate: bool = False,
@@ -370,8 +359,13 @@ class ObjectBase(UserDict):
  
     opts = {
       "Limit": limit,
-      "KeyConditionExpression": index
+      "KeyConditionExpression": condition
     }
+
+    if index is None:
+      index, condition = cls.get_index(condition)
+
+    getLogger().info(f"Querying with index `{index.name}`")
 
     if start_key:
       opts["ExclusiveStartKey"] = start_key
@@ -383,7 +377,7 @@ class ObjectBase(UserDict):
       opts["IndexName"] = index.name
 
     while True:
-      res = cls.__TABLE.query(**opts)
+      res = cls._table.query(**opts)
       items += res["Items"]
 
       if start_key := res.get("LastEvaluatedKey") and paginate is False:
@@ -397,17 +391,105 @@ class ObjectBase(UserDict):
 
     return res
 
+
   def delete(self):
     """
     Deletes an item from the table
     """
     key={
-      self.INDEXES.table.partitionkey_name: self[self.INDEXES.table.partitionkey_name]
+      self.INDEXES.table.partitionkey: self[self.INDEXES.table.partitionkey]
     }
 
     if self.INDEXES.table.is_composit:
-      key[self.INDEXES.table.sortkey_name] = self[self.INDEXES.table.sortkey_name]
+      key[self.INDEXES.table.sortkey] = self[self.INDEXES.table.sortkey]
 
-    self.__TABLE.delete_item(Key=key)
+    self._table.delete_item(Key=key)
 
     return True
+
+
+  @classmethod
+  def get_index(cls, exp: ConditionBase, index: Index = None):
+
+    def match_pk(alias):
+      if index:
+        return [index]
+
+      matches = [
+        mapper.index for mapper in cls.index_map
+        if hasattr(mapper, "partitionkey") and mapper.partitionkey == alias
+      ]
+
+      if not matches:
+        raise IndexNotFoundError("No matching index found")
+
+      return matches
+
+    def match_sk(alias):
+      if index:
+        return [index]
+
+      matches = [
+        mapper.index for mapper in cls.index_map
+        if mapper.sortkey == alias
+      ]
+
+      if not matches:
+        raise IndexNotFoundError("No matching index found")
+
+      return matches
+
+    # Get the aliases being used in the condition keys
+    split_exp = list(exp._values)
+  
+    # There is only a pk operator, no sk if it is an instance of Key
+    if isinstance(split_exp[0], Key):
+      pk_alias = split_exp[0].name
+      sk_alias = None
+    else:
+      pk_alias = split_exp[0]._values[0].name
+      sk_alias = split_exp[1]._values[0].name
+
+
+
+    pk_matches = match_pk(pk_alias)
+
+    if sk_alias is None:
+      # Return the table index if there are multiple matches
+      for possibility in pk_matches:
+        if isinstance(index, TableIndex):
+          index = possibility
+          break
+
+      # Otherwise return the first match since it doesn't matter anyway
+      if index is None:
+        index = pk_matches[0]
+
+      exp._values[0].name = index.partitionkey
+
+      return index, exp
+
+    # Find an index map that uses both keys
+    sk_matches = match_sk(sk_alias)
+
+    index_matches = [
+      index for index in cls.indexes.values()
+      if index in sk_matches and index in pk_matches
+    ]
+
+    if not index_matches:
+      raise IndexNotFoundError("No matching index found")
+
+    # Prefer Table index
+    for possibility in cls.indexes.values():
+      if isinstance(possibility, TableIndex):
+        index = possibility
+        break
+      else:
+        index = index_matches[0]
+
+
+    exp._values[0]._values[0].name = index.partitionkey
+    exp._values[1]._values[0].name = index.sortkey
+
+    return index, exp
