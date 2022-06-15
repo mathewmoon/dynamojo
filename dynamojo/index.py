@@ -3,12 +3,8 @@ from collections import UserDict
 from typing import List
 
 from boto3 import client
-from boto3.dynamodb.conditions import (
-  ConditionBase,
-  Key
-)
+from boto3.dynamodb.conditions import ConditionBase
 
-from json import dumps
 
 class Index:
     """

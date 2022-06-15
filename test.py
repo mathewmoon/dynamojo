@@ -20,11 +20,11 @@ from boto3.dynamodb.conditions import Key
 ##
 TABLE = resource("dynamodb").Table(environ["DYNAMODB_TABLE"])
 
+indexes: List[IndexList] = get_indexes(environ["DYNAMODB_TABLE"])
 
 class Foo(ObjectBase):
-  indexes: List[IndexList] = get_indexes(environ["DYNAMODB_TABLE"])
   _table: Table = TABLE
-
+  indexes = indexes
   index_map = [
     IndexMap(
       index=indexes.table,

@@ -1,26 +1,38 @@
 #!/usr/bin/env python3
+from abc import (
+  ABC,
+  abstractproperty,
+  abstractclassmethod
+)
 from collections import UserDict
 from logging import getLogger
 from typing import (
   Any,
+  Callable,
+  ClassVar,
   Dict,
-  List
+  List,
+  Optional,
+  Union,
+  TYPE_CHECKING
 )
 
 from boto3.session import Session
-from mypy_boto3_dynamodb.service_resource import Table
 from boto3.dynamodb.conditions import (
   AttributeBase,
   ConditionBase,
   Key
 )
-
-from .db import (
+from mypy_boto3_dynamodb.service_resource import Table
+from pydantic import BaseModel, Field
+from pydantic.fields import ModelField
+from .index import (
   Index,
   IndexList,
   IndexMap,
   TableIndex
 )
+from .config import DynamojoConfig
 from .exceptions import (
   ProtectedAttributeError,
   RequiredAttributeError,
@@ -29,84 +41,75 @@ from .exceptions import (
   IndexNotFoundError
 )
 
-from abc import ABC, abstractproperty
+if not TYPE_CHECKING:
+  Table = object
 
-class ObjectBase(UserDict, ABC):
-  """
-  Provides a base class for objects that will be stored in Dynamodb. This class, when used with the db submodule
-  allows for writing classes that require only the most basic of definition to have all the methods required to operate.
-   * CRUD operations are provided by this class and can be overriden in subclasses.
-   * The class is structured to allow for lazy loading of child resources if subclasses are created correctly
-   * New object types represented as subclasses should not have to know anything about the underlying table structure. Indexes are managed
-     by the db.Indexes class and setting YourClass.INDEX_MAP to control the mapping of attributes in your object to the pk/sk of a particular index
-     on the fly
-   * New classes should not ever have to make calles to Dynamodb. If they do then either the subclass is not using the base correctly or there is
-     something that needs to be changed in the base class to accommodate.
-  
-  Creating a subclass:
-    * Create a class that inherits from ObjectBase
-    * Set a class attribute called INDEX_MAP that contains a list/tuple of IndexMap objects. This will map attributes on your object to index attributes
-    * call super().__init__(**kwargs) in your __init__() method
-    * If you need to add functionality to any methods in Object base, such as doing some custom logic before Object.save() then implement that method in
-      your class and at the end call super().<method>()
-      Example:
+class Mutator(BaseModel):
+  source: str
+  callable: Callable[[str, Any, object], Any]
 
-        ```
-          def save(self):
-            self.foo = "bar"
-            return super().save()
-        ```
-    Auth:
-      Before making any calls (class methods or object creation) make sure to set the caller and whether they are an admin
-      Example:
+  class Config:
+    frozen = True
+    arbitrary_types_allowed: True
 
-        ```
-        from db_types import set_caller
 
-        caller = event["identity"]["claims"]["preferred_username"]
-        admin = "AWS Admin" in event["identity"]["claims"]["groups"]
-        set_caller(caller, is_admin=admin)
+class DynamojoBase(BaseModel, ABC):
+  class Config:
+    arbitrary_types_allowed: True
+    allow_mutation = True
 
-        foo = Bar.fetch("foo")
-        ```
-  """
+  class Meta:
+    compound_values: ClassVar[dict] = {}
+    index_aliases: ClassVar[dict] = {}
+    index_values: ClassVar[dict] = {}
 
-  @abstractproperty
-  def _table(self) -> Table:
-    pass
 
-  # Attributes that cannot be changed once set
-  _static_attributes: List[str] = []
+  class DynamojoConfig:
+    __set_by_user__ = False
 
-  # Attributes that will raise an exception on save if not set
-  _required_attributes: List[str] = []
+    # A dictionary in the form of {"<target attribute>": ["source_att_one", "source_att_two"]} where <target_attribute> will
+    # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
+    # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
+    # attributes.
+    compound_attributes: ClassVar[Dict[str, Union[List[str], Callable]]] = {}
 
-  # Attributes that are optional
-  _optional_attributes: List[str] = []
+    # A list of database `Index` objects from `dynamojo.indexes.get_indexes()``
+    indexes: ClassVar[List[Index]] = []
 
-  # Cannot be changed by instances directly. All attributes on indexes get pushed into this list
-  __protected_attributes: List[str] = []
+    # A list of `IndexMap` objects used to map arbitrary fields into index attributes
+    index_maps: ClassVar[List[IndexMap]] = []
 
-  # A dictionary in the form of {"<target attribute>": ["source_att_one", "source_att_two"]} where <target_attribute> will
-  # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
-  # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
-  # attributes.
-  compound_properties: Dict[str, List[str]] = {}
-  
-  # A list of IndexObjects that represent indexes in the table
-  @abstractproperty
-  def indexes(self) -> IndexList:
-    pass
+    static_attributes: ClassVar[List[str]] = []
 
-  # All subclasses must implement this tuple/list of IndexMap items, which will cause mapped attributes to
-  # be automatically duplicated into indexes. Must contain at minimum a IndexMap item for Indexes.table
-  @abstractproperty
-  def index_map(self) -> List[IndexMap]:
-    pass
+    # A Dynamodb table object
+    table: ClassVar[Table] = None
 
-  data = {}
-  _MAPPED_ATTRIBUTES = []
-  __initialized = False
+    compound_separator: str = "~"
+
+    mutators = List[Mutator]
+
+
+  @classmethod
+  def load_config(cls):
+    if getattr(cls.DynamojoConfig, "table", None) is None:
+      raise AttributeError("`DynamojoConfig.table` must be set to a boto3 Table resource")
+    
+    default_values = {
+      "compound_attributes": {},
+      "index_maps": {},
+      "static_attributes": [],
+      "compound_separator": "~",
+      "mutators": []
+    }
+
+    for k, v in default_values.items():
+      if not hasattr(cls.DynamojoConfig, k) or getattr(cls.DynamojoConfig, k) is None:
+        setattr(cls.DynamojoConfig, k, v)
+
+    cls.DynamojoConfig._mutators = {
+      mutator.source: mutator for mutator in cls.DynamojoConfig.mutators
+    }
+
 
   def __init__(
     self,
@@ -114,234 +117,133 @@ class ObjectBase(UserDict, ABC):
     **kwargs: dict
   ) -> None:
 
-    super().__init__()
+    self.load_config()
 
-    self._INDEX_MAP = {}
+    super().__init__(**kwargs)
 
-    # Lets us know to allow setting protected attributes since they came from the db and not user input
-    self.from_db = from_db
+    for k, v in kwargs.items():
+      if k in self.DynamojoConfig._mutators:
+        kwargs[k] = self.mutate_attribute(k, v)
 
-    self.TABLE_INDEX = [
-      index for _, index in self.indexes.items()
-      if isinstance(index, TableIndex)
-    ][0]
+
+    for attribute in self.dict():
+      if attribute not in kwargs:
+        self.__delattr__(attribute)
+
+    for item in self.dict():
+      self.set_compound_attribute(item)
 
     if not bool([
-        x for x in self.index_map
+        x for x in self.DynamojoConfig.index_maps
         if isinstance(x.index, TableIndex)
       ]):
       raise AttributeError(
         "INDEX_MAP must both have an index of type TableIndex"
       )
 
-    self.make_index_map()
-
-    self.__protected_attributes += list(self._INDEX_MAP.keys())
-
-    # After setting self.__initialized to True then any attributes we update will have their corresponding indexes updated
-    self.__initialized = True
-
-
-    self.__force_setattr(
-      "objectType",
-      self.__class__.__name__
-    )
-
-    self.__force_setattr(
-      "__typename",
-      self.__class__.__name__
-    )
-
-    self.update(kwargs)
-
-  def make_index_map(self):
-    """
-    Make a slightly friendlier map to use for parsing attribute -> index key mappings.
-    Each key is an index attribute name (gsi0_sk, pk, lsi1_sk, etc) and the value is the
-    object's attribute that should be mapped to it.
-    """
-    new_map = {}
-
-    for index_item in self.index_map:
+    for index_item in self.DynamojoConfig.index_maps:
       if sk_att := index_item.sortkey:
-        new_map[index_item.index.sortkey] = sk_att
+        self.Meta.index_aliases[index_item.index.sortkey] = sk_att
       if hasattr(index_item, "partitionkey") and index_item.partitionkey is not None:
-        new_map[index_item.index.partitionkey] = index_item.partitionkey
+        self.Meta.index_aliases[index_item.index.partitionkey] = index_item.partitionkey
 
-    for attr in new_map.values():
-      if isinstance(attr, str):
-        self._required_attributes.append(attr)
-      else:
-        self._required_attributes += attr
- 
-    self._required_attributes += list(new_map.keys())
-    self.__protected_attributes += list(new_map.keys())
+    self.set_index_values()
 
-    self._INDEX_MAP.update(new_map)
+  def mutate_attribute(cls, field, val):
+    return super().__setattr__(
+      field,
+      cls.DynamojoConfig._mutators[field].callable(
+        field,
+        val,
+        cls
+      )
+    )
 
-    self._MAPPED_ATTRIBUTES += list(new_map.values())
+  @property
+  def item(self):
+    return {
+      **self.dict(),
+      **self.Meta.index_values,
+      **self.Meta.compound_values
+    }
+
+  def __getattr__(self, field):
+    if field in self.item:
+      return self.item[field]
+    else:
+      return super().__getattribute__(field)
+
+  def __setattr__(cls, field, val, static_override=False):
+    if (
+      static_override is False
+      and field in cls.DynamojoConfig.static_attributes
+      and hasattr(cls, field)
+      and cls.__getattribute__(field) != val
+    ):
+      raise StaticAttributeError(f"Attribute '{field}' is immutable.")
   
-  @property
-  def prefix(self) -> str:
-    return f"{self.__class__.__name__}~"
+    for index, attribute_name in cls.Meta.index_aliases.items():
+      if attribute_name == field:
+        cls.Meta.index_values[index] = val
 
-  @property
-  def _all_attributes(self) -> List[str]:
-    return list(set([
-      *self._static_attributes,
-      *self._required_attributes,
-      *self.__protected_attributes,
-      *self._optional_attributes,
-      "objectType",
-      "__typename"
-    ]))
+    cls.set_compound_attribute(field)
 
-  @property
-  def protected_attributes(self) -> List[str]:
-    return self.__protected_attributes
+    if field in cls.DynamojoConfig._mutators:
+      return cls.mutate_attribute(field, val)
+    else:
+      return super().__setattr__(field, val)
+ 
 
-  @property
-  def optional_attributes(self) -> List[str]:
-    return self._optional_attributes
+  def set_index_values(self):
+    for index, attribute_name in self.Meta.index_aliases.items():
+      if hasattr(self, attribute_name):
+        self.Meta.index_values[index] = self.__getattr__(attribute_name)
+
+      if attribute_name in self.DynamojoConfig.compound_attributes:
+        self.Meta.index_values[index] = self.Meta.compound_values[attribute_name]
+
 
   @classmethod
   def fetch(cls, pk: str, sk: str = None) -> UserDict:
     """
     Returns an item from the database
     """
+    cls.load_config()
+
     key={
-      cls.indexes.table.partitionkey: pk
+      cls.DynamojoConfig.indexes.table.partitionkey: pk
     }
 
-    if cls.indexes.table.sortkey:
-      key[cls.indexes.table.sortkey] = sk
+    if cls.DynamojoConfig.indexes.table.sortkey:
+      key[cls.DynamojoConfig.indexes.table.sortkey] = sk
 
-    item = cls._table.get_item(
+    item = cls.DynamojoConfig.table.get_item(
       Key=key
     ).get("Item")
  
     if item:
       return cls(from_db=True, **item)
 
-  def __setitem__(self, key: str, item: Any) -> None:
-    """
-    Ensures that __setitem__ and __setattr__ behave the same way.
-    """
-    return self.__setattr__(key, item)
 
-  def __setattr__(self, name: str, value: Any) -> None:
-    """
-    Providers a setter that is aware of static/protected attributes, ensures that items are added to self.data
-    and all indexes are updated.
-    """
-    if (
-      name in self._static_attributes
-      and name in self.data
-      and value != self.data[name]
-    ):
-      raise StaticAttributeError(f"Attribute {name} is static and cannot be modified directly once set")
+  def set_compound_attribute(cls, name):
+    cls.load_config()
 
-    if name in self.__protected_attributes and not self.from_db:
-      raise ProtectedAttributeError(
-          f"Attribute {name} is reserved and cannot be set directly")
-
-    if name in [*self._required_attributes, *self._optional_attributes]:
-      super().__setitem__(name, value)
-    super().__setattr__(name, value)
-
-    # Important that this comes last
-    self.__update_indexes(name, value)
-
-  def __update_indexes(self, name: str, value: Any) -> None:
-    """
-    Anytime an attribute that is mapped, via self.INDEX_MAP, is set this will be called and
-    any corresponding index attributes that are mapped to the attribute being set will be updated
-    """
-    if not (
-      self.__initialized
-#      and name in self._MAPPED_ATTRIBUTES
-    ):
-      
-      return
-
-    if value is None:
-      raise ValueError(f"Invalid value for '{name}'. Attributes mapped to indexes cannot be None")
-
-    for index_key, attribute in self._INDEX_MAP.items():
-      if name == attribute:
-        self.__force_setattr(index_key, value, update_index=False)
-
-    self.set_compound_attributes(name)
-  #def __getattribute__(self, name: str) -> Any:
-  #  try:
-  #    return super().__getitem__(name)
-  #  except (NameError, KeyError):
-  #    return super().__getattribute__(name)
-
-  def set_compound_attributes(self, name):
-    for target, attributes in self.compound_attributes.items():
+    for target, attributes in cls.DynamojoConfig.compound_attributes.items():
       if name in attributes:
-        val = "~".join([
-          self.get(attribute, "") for attribute in attributes
+        val = cls.DynamojoConfig.compound_separator.join([
+          str(getattr(cls, attribute, "")) for attribute in attributes
         ])
-        self.__force_setattr(target, val)
+        cls.Meta.compound_values[target] = val
 
-
-  def validate_attributes(self) -> None:
-    """
-    Validates that required attributes are set and that there are no unknown attributes that
-    have leaked into self.data
-    """
-    for att in self._required_attributes:
-      if not self.get(att):
-        raise RequiredAttributeError(f"Missing required attribute {att}")
-
-    for att in self.data:
-      if att not in self._all_attributes:
-        raise UnknownAttributeError(
-            f"Unknown attribute {att} for object of type {self.objectType}")
-
-  def __force_setattr(self, name: Any, value: Any, update_index=True) -> None:
-    """
-    Helper that allows us to set attributes that are protected when calling self.__setattr__
-    """
-    if update_index:
-      self.__update_indexes(name, value)
-    super().__setitem__(name, value)
-    return super().__setattr__(name, value)
 
   def save(self):
     """
     Stores our item in Dynamodb
     """
-    self.validate_attributes()
 
-    self._table.put_item(Item=self.data)
+    return self.DynamojoConfig.table.put_item(Item=self.item)
 
-    return self
 
-  @classmethod
-  def get_prefix(cls) -> str:
-    return f"{cls.__name__}~"
-
-  @classmethod
-  def list(
-    cls,
-    filter: AttributeBase = None
-  ) -> UserDict:
-    """
-    Returns a list of all objects of a certain type, optionally filtered by `filter`
-    """
-    
-    opts = {
-      "index": cls.INDEXES.gsi0.eq(cls.__name__)
-    }
-
-    if filter:
-      opts["filter"] = filter
-
-    return cls.query(**opts)["Items"]
-  
   @classmethod
   def query(
     cls,
@@ -355,8 +257,10 @@ class ObjectBase(UserDict, ABC):
     """
     Runs a Dynamodb query using a condition from db.Index
     """
+    cls.load_config()
+
     items = []
- 
+
     opts = {
       "Limit": limit,
       "KeyConditionExpression": condition
@@ -377,7 +281,7 @@ class ObjectBase(UserDict, ABC):
       opts["IndexName"] = index.name
 
     while True:
-      res = cls._table.query(**opts)
+      res = cls.DynamojoConfig.table.query(**opts)
       items += res["Items"]
 
       if start_key := res.get("LastEvaluatedKey") and paginate is False:
@@ -397,26 +301,27 @@ class ObjectBase(UserDict, ABC):
     Deletes an item from the table
     """
     key={
-      self.INDEXES.table.partitionkey: self[self.INDEXES.table.partitionkey]
+      self.DynamojoConfig.indexes.table.partitionkey: self.Meta.index_values[self.DynamojoConfig.indexes.table.partitionkey]
     }
 
-    if self.INDEXES.table.is_composit:
-      key[self.INDEXES.table.sortkey] = self[self.INDEXES.table.sortkey]
+    if self.DynamojoConfig.indexes.table.is_composit:
+      key[self.DynamojoConfig.indexes.table.sortkey] = self.Meta.index_values[self.DynamojoConfig.indexes.table.sortkey]
 
-    self._table.delete_item(Key=key)
+    res = self.DynamojoConfig.table.delete_item(Key=key)
 
-    return True
+    return res
 
 
   @classmethod
   def get_index(cls, exp: ConditionBase, index: Index = None):
+    cls.load_config()
 
     def match_pk(alias):
       if index:
         return [index]
 
       matches = [
-        mapper.index for mapper in cls.index_map
+        mapper.index for mapper in cls.DynamojoConfig.index_maps
         if hasattr(mapper, "partitionkey") and mapper.partitionkey == alias
       ]
 
