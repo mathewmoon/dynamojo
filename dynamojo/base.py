@@ -71,7 +71,7 @@ class DynamojoBase(BaseModel, ABC):
     # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
     # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
     # attributes.
-    compound_attributes: ClassVar[Dict[str, Union[List[str], Callable]]] = {}
+    joined_attributes: ClassVar[Dict[str, Union[List[str], Callable]]] = {}
 
     # A list of database `Index` objects from `dynamojo.indexes.get_indexes()``
     indexes: ClassVar[List[Index]] = []
@@ -84,18 +84,22 @@ class DynamojoBase(BaseModel, ABC):
     # A Dynamodb table object
     table: ClassVar[Table] = None
 
-    compound_separator: str = "~"
+    join_separator: str = "~"
 
     mutators = List[Mutator]
 
 
   @classmethod
   def load_config(cls):
+    cls.Meta.compound_values = {}
+    cls.Meta.index_aliases = {}
+    cls.Meta.index_values = {}
+
     if getattr(cls.DynamojoConfig, "table", None) is None:
       raise AttributeError("`DynamojoConfig.table` must be set to a boto3 Table resource")
     
     default_values = {
-      "compound_attributes": {},
+      "joined_attributes": {},
       "index_maps": {},
       "static_attributes": [],
       "compound_separator": "~",
@@ -113,11 +117,10 @@ class DynamojoBase(BaseModel, ABC):
 
   def __init__(
     self,
-    from_db: bool = False,
     **kwargs: dict
   ) -> None:
-
     self.load_config()
+
 
     super().__init__(**kwargs)
 
@@ -130,9 +133,6 @@ class DynamojoBase(BaseModel, ABC):
       if attribute not in kwargs:
         self.__delattr__(attribute)
 
-    for item in self.dict():
-      self.set_compound_attribute(item)
-
     if not bool([
         x for x in self.DynamojoConfig.index_maps
         if isinstance(x.index, TableIndex)
@@ -141,13 +141,18 @@ class DynamojoBase(BaseModel, ABC):
         "INDEX_MAP must both have an index of type TableIndex"
       )
 
+
     for index_item in self.DynamojoConfig.index_maps:
       if sk_att := index_item.sortkey:
         self.Meta.index_aliases[index_item.index.sortkey] = sk_att
-      if hasattr(index_item, "partitionkey") and index_item.partitionkey is not None:
+      if getattr(index_item, "partitionkey", None):
         self.Meta.index_aliases[index_item.index.partitionkey] = index_item.partitionkey
 
+    for item in self.item:
+      self.set_compound_attribute(item)
+
     self.set_index_values()
+
 
   def mutate_attribute(cls, field, val):
     return super().__setattr__(
@@ -189,9 +194,11 @@ class DynamojoBase(BaseModel, ABC):
     cls.set_compound_attribute(field)
 
     if field in cls.DynamojoConfig._mutators:
-      return cls.mutate_attribute(field, val)
-    else:
-      return super().__setattr__(field, val)
+      val = cls.mutate_attribute(field, val)
+
+    cls.set_index_values()
+
+    return super().__setattr__(field, val)
  
 
   def set_index_values(self):
@@ -199,7 +206,7 @@ class DynamojoBase(BaseModel, ABC):
       if hasattr(self, attribute_name):
         self.Meta.index_values[index] = self.__getattr__(attribute_name)
 
-      if attribute_name in self.DynamojoConfig.compound_attributes:
+      if attribute_name in self.DynamojoConfig.joined_attributes:
         self.Meta.index_values[index] = self.Meta.compound_values[attribute_name]
 
 
@@ -228,7 +235,7 @@ class DynamojoBase(BaseModel, ABC):
   def set_compound_attribute(cls, name):
     cls.load_config()
 
-    for target, attributes in cls.DynamojoConfig.compound_attributes.items():
+    for target, attributes in cls.DynamojoConfig.joined_attributes.items():
       if name in attributes:
         val = cls.DynamojoConfig.compound_separator.join([
           str(getattr(cls, attribute, "")) for attribute in attributes
@@ -289,8 +296,19 @@ class DynamojoBase(BaseModel, ABC):
       else:
         break
 
+    objects = []
+    for x in res["Items"]:
+      item = cls(**x)
+      print(item.item)
+#      print(f"{item.item['sk']} - {item.item['dateTime']} - {item.item['typeNameAndDateSearch']}")
+      objects.append(item)
+
+    res["Items"] = objects
+    return res
+    print(x)
+    print(y)
     res["Items"] = [
-      cls(from_db=True, **item) for item in res["Items"]
+      cls(**item) for item in res["Items"]
     ]
 
     return res
@@ -306,7 +324,7 @@ class DynamojoBase(BaseModel, ABC):
 
     if self.DynamojoConfig.indexes.table.is_composit:
       key[self.DynamojoConfig.indexes.table.sortkey] = self.Meta.index_values[self.DynamojoConfig.indexes.table.sortkey]
-
+ 
     res = self.DynamojoConfig.table.delete_item(Key=key)
 
     return res

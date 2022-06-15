@@ -1,3 +1,4 @@
+from json import dumps
 from pydantic import BaseModel, validator
 
 from abc import ABC, abstractclassmethod, abstractproperty
@@ -29,8 +30,8 @@ if not TYPE_CHECKING:
 TABLE = resource("dynamodb").Table("account-events")
 indexes = get_indexes("account-events")
 
-def mutate_account(source, value, obj):
-  return "%".join([value, obj.dateTime])
+#def mutate_sk(_, value, obj):
+#  return "~".join([obj.notificationType, value])
 
 class Foo(DynamojoBase):
   accountId: str
@@ -53,46 +54,48 @@ class Foo(DynamojoBase):
         ),
         IndexMap(
             index=indexes.lsi0,
-            sortkey="dateTime",
+            sortkey="dateTime"
         )
     ]
     table: ClassVar = TABLE
-    #compound_attributes: ClassVar = {
-    #    "typeNameAndDateSearch": [
-    #        "notificationType",
-    #        "notificationName"
-    #    ]
-    #}
+    joined_attributes: ClassVar = {
+      "typeNameAndDateSearch": [
+        "notificationType",
+        "notificationName",
+        "dateTime"
+      ]
+    }
     static_attributes: ClassVar = ["dateTime", "accountId"]
-    mutators = [
-      Mutator(source="accountId", target="notificationName", callable=mutate_account)
-    ]
+    mutators = []    #  Mutator(source="dateTime", callable=mutate_sk)
+
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
 
 dt = datetime.now().isoformat()
 
-foo = Foo(
-  accountId="abcd1234kdhfg",
-  dateTime=dt,
-  notificationName="TestName",
-  notificationType="ALARM"
-)
+"""
+for n in range(100):
+  Foo(
+    accountId="abcd1234kdhfg",
+    dateTime=datetime.now().isoformat(),
+    notificationName="TestName",
+    notificationType="ALARM"
+  ).save()
+"""
+#print(foo.item)
+#exit()
+#foo.save()
 
-print(foo.item)
-exit()
-foo.save()
-
-res = Foo.fetch(foo.accountId, foo.typeNameAndDateSearch)
-print(res.item)
-exit()
+#res = Foo.fetch(foo.accountId, foo.typeNameAndDateSearch)
+#print(res.item)
+#exit()
 res = Foo.query(
-  Key("accountId").eq("abcd1234kdhfg")
-)
+    Key("accountId").eq("abcd1234kdhfg")
+)["Items"]
 
-
-print(res)
-
-for item in res["Items"]:
-  item.delete()
+#print(res)
+for item in res:
+  print(
+      f'{item.item["sk"]} - {item.item["typeNameAndDateSearch"]} - {item.item["dateTime"]}')
+  #item.delete()
