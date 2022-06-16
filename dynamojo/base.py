@@ -304,7 +304,7 @@ class DynamojoBase(BaseModel):
         return [index]
 
       matches = [
-        mapper.index for mapper in cls.index_map
+        mapper.index for mapper in cls._config.index_maps
         if mapper.sortkey == alias
       ]
 
@@ -347,7 +347,7 @@ class DynamojoBase(BaseModel):
     sk_matches = match_sk(sk_alias)
 
     index_matches = [
-      index for index in cls.indexes.values()
+      index for index in cls._config.indexes.values()
       if index in sk_matches and index in pk_matches
     ]
 

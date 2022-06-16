@@ -74,20 +74,22 @@ class Foo(DynamojoBase):
 dt = datetime.now().isoformat()
 
 #for _ in range(100):
-#foo =  Foo(
-#    accountId="abcd1234kdhfg",
-#    dateTime=datetime.now().isoformat(),
-#    notificationName="TestName",
-#    notificationType="ALARM"
-#)
+foo =  Foo(
+    accountId="abcd1234kdhfg",
+    dateTime=datetime.now().isoformat(),
+    notificationName="TestName",
+    notificationType="ALARM"
+).save()
 #print(foo.save())
 #exit()
 #
 
 res = Foo.query(
-    Key("accountId").eq("abcd1234kdhfg")
+    Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
 )["Items"]
 
+print(res)
+exit()
 #print(res[0].item)
 #print(res[1].item)
 
