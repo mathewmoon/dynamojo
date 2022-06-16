@@ -7,7 +7,8 @@
 .idea/
 *.bk
 *.json
-
+.terraform*
+*.tfstate
 # CMake
 cmake-build-debug/
 cmake-build-release/

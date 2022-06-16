@@ -1,9 +1,19 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.8
 from collections import UserDict
-from typing import List
+from typing import List, Callable, Any
 
 from boto3 import client
 from boto3.dynamodb.conditions import ConditionBase
+from pydantic import BaseModel
+
+
+class Mutator(BaseModel):
+  source: str
+  callable: Callable[[str, Any, object], Any]
+
+  class Config:
+    frozen = True
+    arbitrary_types_allowed: True
 
 
 class Index:
@@ -24,22 +34,22 @@ class Index:
         self.__sortkey = sortkey if sortkey else None
         self.__name = name
         self.is_composit = partitionkey and sortkey
-        
+
     @property
     def partitionkey(self) -> ConditionBase:
         """ The partition key of the index as Key(partition key name)"""
         return self.__partitionkey
-    
+
     @property
     def sortkey(self) -> ConditionBase:
         """ The sort key of the index as Key(sort key name)"""
-        return self.__sortkey 
-    
+        return self.__sortkey
+
     @property
     def table_index(self) -> bool:
         """ Whether or not this index is the table index """
         return isinstance(self, TableIndex)
-    
+
     @property
     def name(self) -> str:
         """ Name of the index """
@@ -113,7 +123,7 @@ def get_indexes(table_name):
         "KeySchema": desc["KeySchema"]
     }]
 
-    
+
     def build_indexes(index_type, index_list):
         index_objects = []
         for index in index_list:
@@ -125,7 +135,7 @@ def get_indexes(table_name):
                     args["partitionkey"] = attr["AttributeName"]
                 elif attr["KeyType"] == "RANGE":
                     args["sortkey"] = attr["AttributeName"]
-                
+
             index_objects.append(index_type(**args))
 
         return index_objects
@@ -158,8 +168,8 @@ class IndexMap:
             raise ValueError(f"Partition key required for index {index.name}")
 
         if index.sortkey and not sortkey:
-            raise ValueError(f"Sort key required for index {index.name}")          
- 
+            raise ValueError(f"Sort key required for index {index.name}")
+
         if sortkey and not index.sortkey:
             raise ValueError(f"Index {index.name} requires a sort key")
 
