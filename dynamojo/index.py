@@ -3,7 +3,6 @@ from collections import UserDict
 from typing import List, Callable, Any
 
 from boto3 import client
-from boto3.dynamodb.conditions import ConditionBase
 from pydantic import BaseModel
 
 
