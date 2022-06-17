@@ -1,6 +1,6 @@
-from base import DynamojoBase
-from config import DynamojoConfig
-from index import (
+from .base import DynamojoBase
+from .config import DynamojoConfig
+from .index import (
     get_indexes,
     Gsi,
     Index,
