@@ -124,8 +124,9 @@ class DynamojoBase(BaseModel):
         kwargs[k] = self.mutate_attribute(k, v)
 
 
-    #for item in self.item:
-    #  self.set_compound_attribute(item)
+  @property
+  def item(self):
+    return self.dict()
 
 
   def mutate_attribute(cls, field, val):
@@ -137,13 +138,6 @@ class DynamojoBase(BaseModel):
         cls
       )
     )
-
-  @property
-  def item(self):
-    return {
-      **super().__dict__,
-      **self.__joined_values__
-    }
 
   def __setattr__(cls, field, val, static_override=False):
     if field in cls.__reserved__attributes__:
@@ -208,7 +202,7 @@ class DynamojoBase(BaseModel):
     Stores our item in Dynamodb
     """
 
-    return self._config.table.put_item(Item=self.item)
+    return self._config.table.put_item(Item=self.dict())
 
 
   @classmethod
