@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 from collections import UserDict
 from os import environ
@@ -22,58 +21,55 @@ TABLE = resource("dynamodb").Table(environ["DYNAMODB_TABLE"])
 
 indexes: List[IndexList] = get_indexes(environ["DYNAMODB_TABLE"])
 
+
 class Foo(ObjectBase):
-  _table: Table = TABLE
-  indexes = indexes
-  index_map = [
-    IndexMap(
-      index=indexes.table,
-      sortkey = "typeNameAndDateSearch",
-      partitionkey="accountId"
-    ),
-    IndexMap(
-      index=indexes.gsi0,
-      sortkey="dateTime",
-      partitionkey="notificationType"
-    ),
-    IndexMap(
-      index=indexes.lsi0,
-      sortkey="dateTime",
-    )
-  ]
-
-  compound_attributes = {
-    "typeNameAndDateSearch": [
-      "notificationType",
-      "notificationName",
-      "dateTime"
+    _table: Table = TABLE
+    indexes = indexes
+    index_map = [
+        IndexMap(
+            index=indexes.table,
+            sortkey="typeNameAndDateSearch",
+            partitionkey="accountId",
+        ),
+        IndexMap(
+            index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
+        ),
+        IndexMap(index=indexes.lsi0, sortkey="dateTime",),
     ]
-  }
 
-  def __init__(
-    self,
-    **kwargs
-  ):
-    self._required_attributes = ["notificationType", "notificationName", "dateTime", "accountId", "message"]
-    self._optional_attributes = []
-    self._static_attributes = []
-    super().__init__(**kwargs)
+    compound_attributes = {
+        "typeNameAndDateSearch": ["notificationType", "notificationName", "dateTime"]
+    }
+
+    def __init__(self, **kwargs):
+        self._required_attributes = [
+            "notificationType",
+            "notificationName",
+            "dateTime",
+            "accountId",
+            "message",
+        ]
+        self._optional_attributes = []
+        self._static_attributes = []
+        super().__init__(**kwargs)
 
 
 ###
 #  Using the class we just made
 ###
 foo = Foo(
-  notificationType="TEST_ALARM_TYPE",
-  notificationName="notification name test",
-  dateTime="3456778554363456",
-  accountId="MYACCOUNT_12345",
-  message="Test message"
+    notificationType="TEST_ALARM_TYPE",
+    notificationName="notification name test",
+    dateTime="3456778554363456",
+    accountId="MYACCOUNT_12345",
+    message="Test message",
 )
 foo.save()
 
 # Parent class will automatically detect that we are using attributes mapped to the table index
-condition = Key("accountId").eq("MYACCOUNT_12345") & Key("typeNameAndDateSearch").begins_with("TEST_ALARM_TYPE")
+condition = Key("accountId").eq("MYACCOUNT_12345") & Key(
+    "typeNameAndDateSearch"
+).begins_with("TEST_ALARM_TYPE")
 res = Foo.query(condition)
 print(res)
 

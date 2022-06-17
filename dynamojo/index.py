@@ -8,12 +8,12 @@ from pydantic import BaseModel
 
 
 class Mutator(BaseModel):
-  source: str
-  callable: Callable[[str, Any, object], Any]
+    source: str
+    callable: Callable[[str, Any, object], Any]
 
-  class Config:
-    frozen = True
-    arbitrary_types_allowed: True
+    class Config:
+        frozen = True
+        arbitrary_types_allowed: True
 
 
 class Index:
@@ -22,13 +22,7 @@ class Index:
     partion/sort key names from the developer using them.
     """
 
-    def __init__(
-        self,
-        *,
-        name: str,
-        sortkey: str,
-        partitionkey: str = None,
-    ):
+    def __init__(self, *, name: str, sortkey: str, partitionkey: str = None,) -> None:
 
         self.__partitionkey = partitionkey if partitionkey else None
         self.__sortkey = sortkey if sortkey else None
@@ -36,12 +30,12 @@ class Index:
         self.is_composit = partitionkey and sortkey
 
     @property
-    def partitionkey(self) -> ConditionBase:
+    def partitionkey(self) -> str:
         """ The partition key of the index as Key(partition key name)"""
         return self.__partitionkey
 
     @property
-    def sortkey(self) -> ConditionBase:
+    def sortkey(self) -> str:
         """ The sort key of the index as Key(sort key name)"""
         return self.__sortkey
 
@@ -57,43 +51,18 @@ class Index:
 
 
 class Gsi(Index):
-    def __init__(
-        self,
-        name: str,
-        partitionkey: str,
-        sortkey: str = None
-    ):
-        super().__init__(
-            name=name,
-            sortkey=sortkey,
-            partitionkey=partitionkey
-        )
+    def __init__(self, name: str, partitionkey: str, sortkey: str = None) -> None:
+        super().__init__(name=name, sortkey=sortkey, partitionkey=partitionkey)
 
 
 class Lsi(Index):
-    def __init__(
-        self,
-        name: str,
-        sortkey: str
-    ):
-        super().__init__(
-            name=name,
-            sortkey=sortkey
-        )
+    def __init__(self, name: str, sortkey: str) -> None:
+        super().__init__(name=name, sortkey=sortkey)
 
 
 class TableIndex(Index):
-    def __init__(
-        self,
-        name: str,
-        partitionkey: str,
-        sortkey: str = None
-    ):
-        super().__init__(
-            name=name,
-            partitionkey=partitionkey,
-            sortkey=sortkey
-        )
+    def __init__(self, name: str, partitionkey: str, sortkey: str = None) -> None:
+        super().__init__(name=name, partitionkey=partitionkey, sortkey=sortkey)
 
 
 class IndexList(UserDict):
@@ -112,17 +81,13 @@ class IndexList(UserDict):
             self.data[index.name] = index
 
 
-def get_indexes(table_name):
+def get_indexes(table_name: str) -> IndexList:
     CLIENT = client("dynamodb")
     desc = CLIENT.describe_table(TableName=table_name)["Table"]
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])
 
-    table_list = [{
-        "IndexName": "table",
-        "KeySchema": desc["KeySchema"]
-    }]
-
+    table_list = [{"IndexName": "table", "KeySchema": desc["KeySchema"]}]
 
     def build_indexes(index_type, index_list):
         index_objects = []
@@ -140,11 +105,13 @@ def get_indexes(table_name):
 
         return index_objects
 
-    indexes = IndexList(*[
-        *build_indexes(Gsi, gsi_list),
-        *build_indexes(Lsi, lsi_list),
-        *build_indexes(TableIndex, table_list)
-    ])
+    indexes = IndexList(
+        *[
+            *build_indexes(Gsi, gsi_list),
+            *build_indexes(Lsi, lsi_list),
+            *build_indexes(TableIndex, table_list),
+        ]
+    )
     return indexes
 
 
@@ -154,11 +121,8 @@ class IndexMap:
     sk: str = None
 
     def __init__(
-        self,
-        index: Index,
-        partitionkey: str = None,
-        sortkey: str = None
-    ):
+        self, index: Index, partitionkey: str = None, sortkey: str = None
+    ) -> None:
         if isinstance(index, Lsi) and partitionkey:
             raise ValueError(
                 "Lsi indexes only specify a sort key and use the table's partition key"
@@ -180,4 +144,3 @@ class IndexMap:
             self.sortkey = sortkey
 
         self.index = index
-

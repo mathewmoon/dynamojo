@@ -1,13 +1,12 @@
-from typing import NamedTuple
-from . import base
-
-class AppUser(NamedTuple):
-  username: str
-  is_admin: bool = False
-
-
-def set_caller(username: str, is_admin=False) -> AppUser:
-  base.ObjectBase.Caller = AppUser(
-    username=username,
-    is_admin=is_admin
-  )
+from base import DynamojoBase
+from config import DynamojoConfig
+from index import (
+    get_indexes,
+    Gsi,
+    Index,
+    IndexList,
+    IndexMap,
+    Lsi,
+    Mutator,
+    TableIndex,
+)

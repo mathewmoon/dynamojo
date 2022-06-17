@@ -6,13 +6,7 @@ from abc import ABC, abstractclassmethod, abstractproperty
 from collections import UserDict
 from datetime import datetime
 
-from typing import (
-  Any,
-  ClassVar,
-  Dict,
-  List,
-  Optional
-)
+from typing import Any, ClassVar, Dict, List, Optional
 from os import environ
 from typing import List
 from typing import TYPE_CHECKING
@@ -26,70 +20,59 @@ from dynamojo.config import DynamojoConfig
 from boto3.dynamodb.conditions import Key
 
 if not TYPE_CHECKING:
-  Table = object
+    Table = object
 
 TABLE = resource("dynamodb").Table("test-dynamojo")
 indexes = get_indexes("test-dynamojo")
 
-#def mutate_sk(_, value, obj):
+# def mutate_sk(_, value, obj):
 #  return "~".join([obj.notificationType, value])
 
 
 class Foo(DynamojoBase):
-  accountId: str
-  dateTime: str
-  notificationType: str
-  notificationName: str
+    accountId: str
+    dateTime: str
+    notificationType: str
+    notificationName: str
 
-  _config = DynamojoConfig(
-    indexes = indexes,
-    index_maps = [
-        IndexMap(
-            index=indexes.table,
-            sortkey="dateTime",
-            partitionkey="accountId"
-        ),
-        IndexMap(
-            index=indexes.gsi0,
-            sortkey="dateTime",
-            partitionkey="notificationType"
-        ),
-        IndexMap(
-            index=indexes.lsi0,
-            sortkey="dateTime"
-        )
-    ],
-    table = TABLE,
-    joined_attributes = {
-      "typeNameAndDateSearch": [
-        "notificationType",
-        "notificationName",
-        "dateTime"
-      ]
-    },
-    static_attributes = ["dateTime", "accountId"],
-    mutators = []    #  Mutator(source="dateTime", callable=mutate_sk)
-  )
+    _config = DynamojoConfig(
+        indexes=indexes,
+        index_maps=[
+            IndexMap(index=indexes.table, sortkey="dateTime", partitionkey="accountId"),
+            IndexMap(
+                index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
+            ),
+            IndexMap(index=indexes.lsi0, sortkey="dateTime"),
+        ],
+        table=TABLE,
+        joined_attributes={
+            "typeNameAndDateSearch": [
+                "notificationType",
+                "notificationName",
+                "dateTime",
+            ]
+        },
+        static_attributes=["dateTime", "accountId"],
+        mutators=[],  #  Mutator(source="dateTime", callable=mutate_sk)
+    )
+
 
 dt = datetime.now().isoformat()
 
-#for _ in range(100):
-foo =  Foo(
+# for _ in range(100):
+foo = Foo(
     accountId="abcd1234kdhfg",
     dateTime=datetime.now().isoformat(),
     notificationName="TestName",
-    notificationType="ALARM"
+    notificationType="ALARM",
 )
 
 foo.notificationType = "CHANGED!!!!!!!!!!!"
 print(foo)
 
-res = Foo.query(
-    Key("accountId").eq("abcd1234kdhfg")
-)["Items"]
+res = Foo.query(Key("accountId").eq("abcd1234kdhfg"))["Items"]
 
 print(res)
-
 
 
 """

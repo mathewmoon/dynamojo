@@ -1,24 +1,13 @@
-from typing import (
-  ClassVar,
-  Union,
-  Callable,
-  List,
-  Dict,
-  TYPE_CHECKING
-)
+from typing import Union, Callable, List, Dict, TYPE_CHECKING
 
 from mypy_boto3_dynamodb.service_resource import Table
-from pydantic import BaseModel, BaseConfig
+from pydantic import BaseModel
 
-from .index import (
-  Index,
-  IndexList,
-  IndexMap,
-  Mutator
-)
+from .index import IndexList, IndexMap, Mutator
 
 if not TYPE_CHECKING:
-  Table = object
+    Table = object
+
 
 class DynamojoConfig(BaseModel):
     # A dictionary in the form of {"<target attribute>": ["source_att_one", "source_att_two"]} where <target_attribute> will

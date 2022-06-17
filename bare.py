@@ -10,8 +10,6 @@ class FooBase(BaseModel):
     _alias_fields: dict = PrivateAttr({})
     _initialized: bool = PrivateAttr(False)
 
-
-
     def __init__(self, **kwargs):
 
         super().__init__(**kwargs)
@@ -21,11 +19,9 @@ class FooBase(BaseModel):
 
             super().__setattr__(alias, self.__getattribute__(attr))
 
-
-
         self._initialized = True
 
-        #for k, v in self.dict().items():
+        # for k, v in self.dict().items():
         #    self.__setattr__(k, v)
 
     def __setattr__(self, key, val):
@@ -38,10 +34,8 @@ class FooBase(BaseModel):
 class Foo(FooBase):
     bar: str
     baz: str
-    _config: dict = {
-        "bar": "bar_alias",
-        "baz": "baz_alias"
-    }
+    _config: dict = {"bar": "bar_alias", "baz": "baz_alias"}
+
 
 test = Foo(bar="bar", baz="baz")
 print(test.dict())

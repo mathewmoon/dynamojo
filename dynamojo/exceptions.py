@@ -1,30 +1,30 @@
 class DynamodbException(Exception):
-  pass
+    pass
 
 
 class RequiredAttributeError(DynamodbException):
-  pass
+    pass
 
 
 class StaticAttributeError(DynamodbException):
-  pass
+    pass
 
 
 class UnknownAttributeError(DynamodbException):
-  pass
+    pass
 
 
 class ProtectedAttributeError(DynamodbException):
-  pass
+    pass
 
 
 class ItemNotFoundError(DynamodbException):
-  pass
+    pass
 
 
 class NotAuthorized(DynamodbException):
-  pass
+    pass
 
 
 class IndexNotFoundError(DynamodbException):
-  pass
+    pass
