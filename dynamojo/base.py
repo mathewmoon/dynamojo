@@ -27,6 +27,7 @@ from boto3.dynamodb.conditions import (
 from mypy_boto3_dynamodb.service_resource import Table
 from pydantic import BaseModel, Field, PrivateAttr
 from pydantic.fields import ModelField
+from pydantic.fields import ModelField
 from .index import (
   Index,
   IndexList,
@@ -50,18 +51,16 @@ class DynamojoBase(BaseModel):
 
   _config: DynamojoConfig = PrivateAttr()
 
-  __reserved_attributes__: ClassVar = [
-      "__joined_values__",
-      "__index_aliases__",
-      "__index_values__",
-      "__index_keys__"
-  ]
 
-
-  __joined_values__: dict = PrivateAttr()
+  __joined_sources__: list = PrivateAttr()
   __index_aliases__: dict = PrivateAttr()
-  __index_values__: dict = PrivateAttr()
   __index_keys__: list = PrivateAttr()
+
+  __reserved__attributes__: ClassVar = [
+    "__joined_sources__",
+    "__index_aliases__",
+    "__index_keys__"
+  ]
 
 
   def __init__(
@@ -69,48 +68,64 @@ class DynamojoBase(BaseModel):
     **kwargs: dict
   ) -> None:
 
-    self.__joined_values__ = {}
-    self.__index_aliases__ = {}
-    self.__index_values__ = {}
-    self.__index_keys__ = []
 
-    args = deepcopy(kwargs)
-    for index in self._config.index_maps:
-        if pk := getattr(index.index, "partitionkey", None):
-            self.__index_keys__.append(pk)
-        if sk := getattr(index.index, "sortkey", None):
-            self.__index_keys__.append(sk)
-
-    for attribute in args:
-      if (
-        attribute in self._config.joined_attributes
-        or attribute in self.__index_keys__
-      ):
-        del kwargs[attribute]
+    for attribute in kwargs.items():
+        if attribute in self.__reserved__attributes__:
+            raise AttributeError(f"Attribute {attribute} is reserved")
 
     super().__init__(**kwargs)
 
-    for k, v in kwargs.items():
-      if k in self._config.mutators:
-        kwargs[k] = self.mutate_attribute(k, v)
+    # Real key name -> alias name
+    self.__index_aliases__ = {}
+    # All sk and pk attributes
+    self.__index_keys__ = []
+    # List of attributes that are part of joins
+    self.__joined_sources__ = []
 
 
-    for attribute in self.dict():
-      if attribute not in kwargs:
-        self.__delattr__(attribute)
-
-
+    # Dict of `index key: alias name`
     for index_map in self._config.index_maps:
       if sk_att := index_map.sortkey:
         self.__index_aliases__[index_map.index.sortkey] = sk_att
       if getattr(index_map, "partitionkey", None):
         self.__index_aliases__[index_map.index.partitionkey] = index_map.partitionkey
 
+    # All real index keys
+    self.__index_keys__ = list(set(self.__index_aliases__.values()))
 
-    for item in self.item:
-      self.set_compound_attribute(item)
 
-    self.set_index_values()
+    for alias, sources in self._config.joined_attributes.items():
+        self.__joined_sources__ += sources
+        self.__fields__[alias] = ModelField.infer(
+            name=alias,
+            value=None,
+            annotation=str,
+            class_validators=None,
+            config=self.__config__
+        )
+        self.__annotations__[alias] = str
+
+    for attribute in self.dict():
+        if attribute in self.__joined_sources__:
+            self.set_compound_attribute(attribute)
+
+
+    for index, alias in self.__index_aliases__.items():
+        if not hasattr(self, alias):
+            raise AttributeError(f"Cannot map Index attribute {index} to nonexistent attribute {alias}")
+
+        self.__fields__[index] = self.__fields__[alias]
+        self.__annotations__[index] = self.__annotations__[alias]
+        super().__setattr__(index, self.__getattribute__(alias))
+
+
+    for k, v in kwargs.items():
+      if k in self._config.mutators:
+        kwargs[k] = self.mutate_attribute(k, v)
+
+
+    #for item in self.item:
+    #  self.set_compound_attribute(item)
 
 
   def mutate_attribute(cls, field, val):
@@ -127,19 +142,15 @@ class DynamojoBase(BaseModel):
   def item(self):
     return {
       **super().__dict__,
-      **self.__index_values__,
       **self.__joined_values__
     }
 
-  def __getattr__(self, field):
-    if field in self.item:
-      return self.item[field]
-    else:
-      return super().__getattribute__(field)
-
   def __setattr__(cls, field, val, static_override=False):
-    if field in cls.__reserved_attributes__:
+    if field in cls.__reserved__attributes__:
         return super().__setattr__(field, val)
+
+    if field in cls._config.mutators:
+      val = cls.mutate_attribute(field, val)
 
     if (
       static_override is False
@@ -149,27 +160,16 @@ class DynamojoBase(BaseModel):
     ):
       raise StaticAttributeError(f"Attribute '{field}' is immutable.")
 
-    for index, attribute_name in cls.__index_aliases__.items():
-      if attribute_name == field:
-        cls.__index_values__[index] = val
+    if field in cls.__index_keys__:
+        for index, alias in cls.__index_aliases__.items():
+            if field == alias:
+                super().__setattr__(index, val)
 
-    cls.set_compound_attribute(field)
+    if field in cls.__joined_sources__:
+        cls.set_compound_attribute(field)
 
-    if field in cls._config.mutators:
-      val = cls.mutate_attribute(field, val)
-
-    cls.set_index_values()
 
     return super().__setattr__(field, val)
-
-
-  def set_index_values(self):
-    for index, attribute_name in self.__index_aliases__.items():
-      if hasattr(self, attribute_name):
-        self.__index_values__[index] = self.__getattr__(attribute_name)
-
-      if attribute_name in self._config.joined_attributes:
-        self.__index_values__[index] = self.__joined_values__[attribute_name]
 
 
   @classmethod
@@ -200,7 +200,7 @@ class DynamojoBase(BaseModel):
         val = cls._config.join_separator.join([
           str(getattr(cls, attribute, "")) for attribute in attributes
         ])
-        cls.__joined_values__[target] = val
+        cls.__setattr__(target, val)
 
 
   def save(self):

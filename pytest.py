@@ -46,7 +46,7 @@ class Foo(DynamojoBase):
     index_maps = [
         IndexMap(
             index=indexes.table,
-            sortkey="typeNameAndDateSearch",
+            sortkey="dateTime",
             partitionkey="accountId"
         ),
         IndexMap(
@@ -79,14 +79,24 @@ foo =  Foo(
     dateTime=datetime.now().isoformat(),
     notificationName="TestName",
     notificationType="ALARM"
-).save()
+)
+
+foo.notificationType = "CHANGED!!!!!!!!!!!"
+print(foo)
+
+res = Foo.query(
+    Key("accountId").eq("abcd1234kdhfg")
+)["Items"]
+
+print(res)
+
+
+
+"""
 #print(foo.save())
 #exit()
 #
 
-res = Foo.query(
-    Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
-)["Items"]
 
 print(res)
 exit()
@@ -99,3 +109,4 @@ for item in res:
   print(
     f'{item.item["sk"]} - {item.item["typeNameAndDateSearch"]} - {item.item["dateTime"]}')
   item.delete()
+"""
