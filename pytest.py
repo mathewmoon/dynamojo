@@ -17,16 +17,15 @@ from mypy_boto3_dynamodb.service_resource import Table
 from dynamojo.index import IndexMap, get_indexes, Index, Mutator
 from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Key, Attr, And, ConditionBase, BuiltConditionExpression, ConditionExpressionBuilder, AttributeBase
+
+import boto3.dynamodb.conditions
 
 if not TYPE_CHECKING:
     Table = object
 
 TABLE = resource("dynamodb").Table("test-dynamojo")
 indexes = get_indexes("test-dynamojo")
-
-# def mutate_sk(_, value, obj):
-#  return "~".join([obj.notificationType, value])
 
 
 class Foo(DynamojoBase):
@@ -67,13 +66,15 @@ foo = Foo(
     notificationType="ALARM",
 )
 
-foo.notificationType = "CHANGED!!!!!!!!!!!"
-print(foo)
 
-res = Foo.query(Key("accountId").eq("abcd1234kdhfg"))["Items"]
+condition = Key("notificationType").eq("ALARM") & Key("dateTime").gt("0")
+#res = Foo.query(KeyConditionExpression=condition)["Items"]
 
+#item = res[0]
+res = Foo.query(KeyConditionExpression=condition)
+res = Foo.fetch("abcd1234kdhfg", "ALARM~TestName~2022-06-16T01:03:20.439051")
 print(res)
-
+exit()
 
 """
 #print(foo.save())
@@ -93,3 +94,28 @@ for item in res:
     f'{item.item["sk"]} - {item.item["typeNameAndDateSearch"]} - {item.item["dateTime"]}')
   item.delete()
 """
+# pk = Tenant
+# sk = SlackChannel~account~name
+class SlackChannel(DynamojoBase):
+
+    _config = DynamojoConfig(
+        indexes=indexes,
+        index_maps=[
+            IndexMap(index=indexes.table, sortkey="dateTime", partitionkey="accountId"),
+            IndexMap(
+                index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
+            ),
+            IndexMap(index=indexes.lsi0, sortkey="dateTime"),
+        ],
+        table=TABLE,
+        joined_attributes={
+            "typeNameAndDateSearch": [
+                "notificationType",
+                "notificationName",
+                "dateTime",
+            ]
+        },
+        static_attributes=["dateTime", "accountId"],
+        mutators=[],  #  Mutator(source="dateTime", callable=mutate_sk)
+    )
+

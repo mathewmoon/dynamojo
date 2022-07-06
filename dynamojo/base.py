@@ -1,12 +1,15 @@
 #!/usr/bin/env python3.8
 from logging import getLogger
-from typing import Any, ClassVar, Dict, List, Tuple, TYPE_CHECKING
+from json import dumps
+from typing import Any, ClassVar, Dict, List, Tuple, Union, TYPE_CHECKING
 
-from boto3.dynamodb.conditions import AttributeBase, ConditionBase, Key
+from boto3 import Session
+from boto3.dynamodb.conditions import AttributeBase, ConditionBase, Key, Attr, ConditionExpressionBuilder, BuiltConditionExpression
+from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 from pydantic import BaseModel, PrivateAttr
 from pydantic.fields import ModelField
 
-from .index import Index, TableIndex
+from .index import Index, Lsi, TableIndex
 from .config import DynamojoConfig
 from .exceptions import StaticAttributeError, IndexNotFoundError
 
@@ -14,22 +17,19 @@ if not TYPE_CHECKING:
     Table = object
 
 
+Session = Session()
+DYNAMOCLIENT = Session.client("dynamodb")
+
+
 class DynamojoBase(BaseModel):
 
     _config: DynamojoConfig = PrivateAttr()
-
     # List of attributes that are part of joins
     __joined_sources__: list = PrivateAttr(default=[])
-    # Dict of real key name -> alias name
-    __index_aliases__: dict = PrivateAttr(default={})
-    # All partition and sortkey attributes
-    __index_keys__: list = PrivateAttr(default=[])
     # Reserved for internal use
     __reserved__attributes__: ClassVar = [
         "__reserved_attributes__",
-        "__joined_sources__",
-        "__index_aliases__",
-        "__index_keys__",
+        "__joined_sources__"
     ]
 
     def __init__(self, **kwargs: Dict[str, Any]) -> None:
@@ -40,21 +40,7 @@ class DynamojoBase(BaseModel):
 
         super().__init__(**kwargs)
 
-        self.__index_aliases__: Dict = {}
-        self.__index_keys__: List = []
         self.__joined_sources__: List = []
-
-        # Dict of `index key: alias name`
-        for index_map in self._config.index_maps:
-            if sk_att := index_map.sortkey:
-                self.__index_aliases__[index_map.index.sortkey] = sk_att
-            if getattr(index_map, "partitionkey", None):
-                self.__index_aliases__[
-                    index_map.index.partitionkey
-                ] = index_map.partitionkey
-
-        # All real index keys
-        self.__index_keys__ = list(set(self.__index_aliases__.values()))
 
         # For any compound attributes we need to reserve their space in self.__fields__
         # and self.__annotations__ or setattr() won't work
@@ -75,7 +61,7 @@ class DynamojoBase(BaseModel):
 
         # Index attributes (The real ones in the DB) have to be mapped to either a concrete attribute or
         # one that has been created dynamically by joins
-        for index, alias in self.__index_aliases__.items():
+        for index, alias in self._config.__index_aliases__.items():
             if not hasattr(self, alias):
                 raise AttributeError(
                     f"Cannot map Index attribute {index} to nonexistent attribute {alias}"
@@ -121,28 +107,39 @@ class DynamojoBase(BaseModel):
             self.set_compound_attribute(field)
 
         # Update the index
-        if field in self.__index_keys__:
-            for index, alias in self.__index_aliases__.items():
+        if field in self._config.__index_keys__:
+            for index, alias in self._config.__index_aliases__.items():
                 if field == alias:
                     super().__setattr__(index, val)
 
         return super().__setattr__(field, val)
 
     @classmethod
-    def fetch(cls, pk: str, sk: str = None) -> Dict:
+    def fetch(cls, pk: str, sk: str = None, **kwargs) -> Dict:
         """
-    Returns an item from the database
-    """
+        Returns an item from the database
+        """
 
         key = {cls._config.indexes.table.partitionkey: pk}
 
         if cls._config.indexes.table.sortkey:
             key[cls._config.indexes.table.sortkey] = sk
 
-        res = cls._config.table.get_item(Key=key)
+        serialized_key = {
+            k: TypeSerializer().serialize(v)
+            for k, v in key.items()
+        }
 
+        opts = {
+            "Key": serialized_key,
+            "TableName": cls._config.table._name,
+            **kwargs
+        }
+
+        res = DYNAMOCLIENT.get_item(**opts)
+        print(res)
         if item := res.get("Item"):
-            res["Item"] = cls.construct(**item)
+            res["Item"] = cls.construct(**cls.deserialize_dynamo(item))
 
         return item
 
@@ -155,62 +152,160 @@ class DynamojoBase(BaseModel):
                 )
                 cls.__setattr__(target, val)
 
+    @classmethod
+    def _get_index_from_attributes(cls, partitionkey: str = None, sortkey: str = None) -> Index:
+        for x in cls._config.index_maps:
+            if x.index.name == "table":
+                table_index_map = x
+                break
+        matches = {}
+
+        for mapping in cls._config.index_maps:
+
+            if isinstance(mapping.index, Lsi):
+                pk = table_index_map.partitionkey
+            else:
+                pk = mapping.partitionkey
+
+            if hasattr(mapping, "sortkey"):
+                sk = mapping.sortkey
+            else:
+                sk = None
+
+            if (
+                # If we only had one key specified it HAS to be the partition
+                sortkey is None
+                and partitionkey == pk
+            ) or (
+                partitionkey is not None and sortkey is not None
+                and (
+                    pk == partitionkey
+                    # Catch cases where our key is not composite (yuck!)
+                    and (sk == sortkey or sk is None)
+                )
+            ):
+                matches[mapping.index.name] = mapping.index
+
+        if not matches:
+            raise IndexNotFoundError(
+                "Could not find a suitable index. Either specify a valid index or change the Condition statement"
+            )
+
+        return matches.get("table", list(matches.values())[0])
+
+
+
+    @classmethod
+    def _get_raw_condition_expression(self, exp: ConditionBase, index: Union[Index, str] = None, expression_type="KeyConditionExpression"):
+        is_key_condition = expression_type == "KeyConditionExpression"
+        raw_exp = ConditionExpressionBuilder().build_expression(exp, is_key_condition=is_key_condition)
+
+
+        if is_key_condition:
+            attribute_names = list(raw_exp.attribute_name_placeholders.values())
+            if len(attribute_names) == 1:
+                attribute_names.append(None)
+
+            if isinstance(index, str):
+                index = self.get_index_by_name(index)
+
+            if index is None:
+                index = self._get_index_from_attributes(*attribute_names)
+
+            for placeholder, attr in raw_exp.attribute_name_placeholders.items():
+                if attr == attribute_names[0]:
+                    raw_exp.attribute_name_placeholders[placeholder] = index.partitionkey
+                if len(attribute_names) == 2 and attr == attribute_names[1]:
+                    raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
+
+
+        for k, v in raw_exp.attribute_value_placeholders.items():
+            raw_exp.attribute_value_placeholders[k] = TypeSerializer().serialize(v)
+
+        opts = {}
+
+        if expression_type == "KeyConditionExpression":
+            opts["IndexName"] = self._get_index_from_condition(exp).name
+            opts["KeyConditionExpression"] = raw_exp.condition_expression
+            opts["ExpressionAttributeNames"] = raw_exp.attribute_name_placeholders
+
+        elif expression_type == "FilterExpression":
+            opts["FilterExpression"] = raw_exp.condition_expression
+
+        else:
+            raise TypeError("Invalid Condition type. Must be one of KeyConditionExpression, or FilterExpression")
+
+        opts["ExpressionAttributeValues"] = raw_exp.attribute_value_placeholders
+        opts["TableName"] = self._config.table._name
+
+
+        return opts
+
+
     def save(self) -> None:
         """
-    Stores our item in Dynamodb
-    """
+        Stores our item in Dynamodb
+        """
 
         return self._config.table.put_item(Item=self.dict())
 
     @classmethod
+    def get_index_by_name(cls, name: str) -> Index:
+        try:
+            return cls._config.indexes[name]
+        except KeyError:
+            raise IndexNotFoundError(f"Index {name} does not exist")
+
+    @classmethod
     def query(
         cls,
-        condition: ConditionBase,
-        index: Index = None,
-        filter: AttributeBase = None,
-        limit: int = 1000,
-        paginate: bool = False,
-        start_key: dict = None,
+        KeyConditionExpression: ConditionBase,
+        Index: Union[Index, str] = None,
+        FilterExpression: AttributeBase = None,
+        Limit: int = 1000,
+        ExclusiveStartKey: dict = None,
+        **kwargs
     ) -> Dict:
         """
-    Runs a Dynamodb query using a condition from db.Index
-    """
+        Runs a Dynamodb query using a condition from db.Inde x
+        """
 
-        items = []
+        opts = {
+            **kwargs,
+            "Limit": Limit
+        }
 
-        opts = {"Limit": limit, "KeyConditionExpression": condition}
+        opts.update(cls._get_raw_condition_expression(
+            exp=KeyConditionExpression,
+            index=Index
+        ))
 
-        if index is None:
-            index, condition = cls._get_index(condition)
 
-        getLogger().info(f"Querying with index `{index.name}`")
+        if FilterExpression is not None:
+            opts.update(cls._get_raw_condition_expression(
+                exp=FilterExpression,
+                expression_type="FilterExpression"
+            ))
 
-        if start_key:
-            opts["ExclusiveStartKey"] = start_key
+        if ExclusiveStartKey is not None:
+            opts["ExclusiveStartKey"] = ExclusiveStartKey
 
-        if filter:
-            opts["FilterExpression"] = filter
+        getLogger().info(f"Querying with index `{opts['IndexName']}`")
 
-        if not index.table_index:
-            opts["IndexName"] = index.name
+        res = DYNAMOCLIENT.query(**opts)
 
-        while True:
-            res = cls._config.table.query(**opts)
-            items += res["Items"]
-
-            if start_key := res.get("LastEvaluatedKey") and paginate is False:
-                opts["ExclusiveStartKey"] = start_key
-            else:
-                break
-
-        res["Items"] = [cls.construct(**item) for item in items]
+        res["Items"] = [
+            cls(**cls.deserialize_dynamo(item))
+            for item in res["Items"]
+        ]
 
         return res
 
+
     def delete(self) -> None:
         """
-    Deletes an item from the table
-    """
+        Deletes an item from the table
+        """
         key = {
             self._config.indexes.table.partitionkey: self.__index_values__[
                 self._config.indexes.table.partitionkey
@@ -226,89 +321,10 @@ class DynamojoBase(BaseModel):
 
         return res
 
-    @classmethod
-    def _get_index(
-        cls, exp: ConditionBase, index: Index = None
-    ) -> Tuple[Index, ConditionBase]:
-        def match_pk(alias):
-            if index:
-                return [index]
 
-            matches = [
-                mapper.index
-                for mapper in cls._config.index_maps
-                if hasattr(mapper, "partitionkey") and mapper.partitionkey == alias
-            ]
-
-            if not matches:
-                raise IndexNotFoundError("No matching index found")
-
-            return matches
-
-        def match_sk(alias):
-            if index:
-                return [index]
-
-            matches = [
-                mapper.index
-                for mapper in cls._config.index_maps
-                if mapper.sortkey == alias
-            ]
-
-            if not matches:
-                raise IndexNotFoundError("No matching index found")
-
-            return matches
-
-        # Get the aliases being used in the condition keys
-        split_exp = list(exp._values)
-
-        # There is only a pk operator, no sk if it is an instance of Key
-        if isinstance(split_exp[0], Key):
-            pk_alias = split_exp[0].name
-            sk_alias = None
-        else:
-            pk_alias = split_exp[0]._values[0].name
-            sk_alias = split_exp[1]._values[0].name
-
-        pk_matches = match_pk(pk_alias)
-
-        if sk_alias is None:
-            # Return the table index if there are multiple matches
-            for possibility in pk_matches:
-                if isinstance(index, TableIndex):
-                    index = possibility
-                    break
-
-            # Otherwise return the first match since it doesn't matter anyway
-            if index is None:
-                index = pk_matches[0]
-
-            exp._values[0].name = index.partitionkey
-
-            return index, exp
-
-        # Find an index map that uses both keys
-        sk_matches = match_sk(sk_alias)
-
-        index_matches = [
-            index
-            for index in cls._config.indexes.values()
-            if index in sk_matches and index in pk_matches
-        ]
-
-        if not index_matches:
-            raise IndexNotFoundError("No matching index found")
-
-        # Prefer Table index
-        for possibility in cls.indexes.values():
-            if isinstance(possibility, TableIndex):
-                index = possibility
-                break
-            else:
-                index = index_matches[0]
-
-        exp._values[0]._values[0].name = index.partitionkey
-        exp._values[1]._values[0].name = index.sortkey
-
-        return index, exp
+    @staticmethod
+    def deserialize_dynamo(data):
+        return {
+            k: TypeDeserializer().deserialize(v)
+            for k, v in data.items()
+        }

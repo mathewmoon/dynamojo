@@ -1,9 +1,19 @@
-from typing import Union, Callable, List, Dict, TYPE_CHECKING
+from typing import (
+    Union,
+    Callable,
+    List,
+    Dict,
+    TYPE_CHECKING
+)
 
 from mypy_boto3_dynamodb.service_resource import Table
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
-from .index import IndexList, IndexMap, Mutator
+from .index import (
+    IndexList,
+    IndexMap,
+    Mutator
+)
 
 if not TYPE_CHECKING:
     Table = object
@@ -37,6 +47,25 @@ class DynamojoConfig(BaseModel):
 
     underscore_attrs_are_private: bool = True
 
+    # Dict of `index key: alias name`
+    __index_aliases__: dict = PrivateAttr(default={})
+
+    __index_keys__: List[str] = PrivateAttr(default={})
+
     class Config:
+        underscore_attrs_are_private: bool = True
         arbitrary_types_allowed = True
         extra = "allow"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        for index_map in self.index_maps:
+            if sk_att := index_map.sortkey:
+                self.__index_aliases__[index_map.index.sortkey] = sk_att
+            if getattr(index_map, "partitionkey", None):
+                self.__index_aliases__[
+                    index_map.index.partitionkey
+                ] = index_map.partitionkey
+
+        self.__index_keys__ = list(set(self.__index_aliases__.values()))
