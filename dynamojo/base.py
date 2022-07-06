@@ -204,13 +204,10 @@ class DynamojoBase(BaseModel):
 
         return matches.get("table", list(matches.values())[0])
 
-
-
     @classmethod
     def _get_raw_condition_expression(self, exp: ConditionBase, index: Union[Index, str] = None, expression_type="KeyConditionExpression"):
         is_key_condition = expression_type == "KeyConditionExpression"
         raw_exp = ConditionExpressionBuilder().build_expression(exp, is_key_condition=is_key_condition)
-
 
         if is_key_condition:
             attribute_names = list(raw_exp.attribute_name_placeholders.values())
@@ -229,14 +226,12 @@ class DynamojoBase(BaseModel):
                 if len(attribute_names) == 2 and attr == attribute_names[1]:
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
 
-
         for k, v in raw_exp.attribute_value_placeholders.items():
             raw_exp.attribute_value_placeholders[k] = TypeSerializer().serialize(v)
 
         opts = {}
 
         if expression_type == "KeyConditionExpression":
-            print(raw_exp.attribute_name_placeholders.values())
             opts["IndexName"] = index.name
             opts["KeyConditionExpression"] = raw_exp.condition_expression
             opts["ExpressionAttributeNames"] = raw_exp.attribute_name_placeholders
@@ -250,18 +245,15 @@ class DynamojoBase(BaseModel):
         opts["ExpressionAttributeValues"] = raw_exp.attribute_value_placeholders
         opts["TableName"] = self._config.table
 
-
         return opts
-
 
     def save(self) -> None:
         """
         Stores our item in Dynamodb
         """
-
         item = {
-            k: TypeSerializer(v)
-            for k, g in self.item.item()
+            k: TypeSerializer.serialize(v)
+            for k, v in self.item.item()
         }
 
         return DYNAMOCLIENT.put_item(Item=item)
@@ -297,7 +289,6 @@ class DynamojoBase(BaseModel):
             index=Index
         ))
 
-
         if FilterExpression is not None:
             opts.update(cls._get_raw_condition_expression(
                 exp=FilterExpression,
@@ -318,7 +309,6 @@ class DynamojoBase(BaseModel):
 
         return res
 
-
     def delete(self) -> None:
         """
         Deletes an item from the table
@@ -337,7 +327,6 @@ class DynamojoBase(BaseModel):
         res = self._config.table.delete_item(Key=key)
 
         return res
-
 
     @staticmethod
     def deserialize_dynamo(data):
