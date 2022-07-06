@@ -2,21 +2,19 @@ from typing import (
     Union,
     Callable,
     List,
-    Dict,
-    TYPE_CHECKING
+    Dict
 )
 
-from mypy_boto3_dynamodb.service_resource import Table
-from pydantic import BaseModel, PrivateAttr
+from pydantic import (
+    BaseModel,
+    PrivateAttr
+)
 
 from .index import (
     IndexList,
     IndexMap,
     Mutator
 )
-
-if not TYPE_CHECKING:
-    Table = object
 
 
 class DynamojoConfig(BaseModel):
@@ -34,8 +32,8 @@ class DynamojoConfig(BaseModel):
 
     static_attributes: List[str] = []
 
-    # A Dynamodb table object
-    table: Table
+    # A Dynamodb table name
+    table: str
 
     join_separator: str = "~"
 

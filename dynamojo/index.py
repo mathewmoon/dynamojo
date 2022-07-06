@@ -2,8 +2,9 @@
 from collections import UserDict
 from typing import List, Callable, Any
 
-from boto3 import client
 from pydantic import BaseModel
+
+from .boto import DYNAMOCLIENT
 
 
 class Mutator(BaseModel):
@@ -81,8 +82,8 @@ class IndexList(UserDict):
 
 
 def get_indexes(table_name: str) -> IndexList:
-    CLIENT = client("dynamodb")
-    desc = CLIENT.describe_table(TableName=table_name)["Table"]
+
+    desc = DYNAMOCLIENT.describe_table(TableName=table_name)["Table"]
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])
 

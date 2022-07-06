@@ -24,7 +24,7 @@ import boto3.dynamodb.conditions
 if not TYPE_CHECKING:
     Table = object
 
-TABLE = resource("dynamodb").Table("test-dynamojo")
+TABLE = "test-dynamojo"
 indexes = get_indexes("test-dynamojo")
 
 

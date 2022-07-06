@@ -1,24 +1,35 @@
 #!/usr/bin/env python3.8
 from logging import getLogger
-from json import dumps
-from typing import Any, ClassVar, Dict, List, Tuple, Union, TYPE_CHECKING
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    List,
+    Union
+)
 
-from boto3 import Session
-from boto3.dynamodb.conditions import AttributeBase, ConditionBase, Key, Attr, ConditionExpressionBuilder, BuiltConditionExpression
-from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+from boto3.dynamodb.conditions import (
+    AttributeBase,
+    ConditionBase,
+    ConditionExpressionBuilder
+)
+from boto3.dynamodb.types import (
+    TypeSerializer,
+    TypeDeserializer
+)
 from pydantic import BaseModel, PrivateAttr
 from pydantic.fields import ModelField
 
-from .index import Index, Lsi, TableIndex
+from .boto import DYNAMOCLIENT
+from .index import (
+    Index,
+    Lsi
+)
 from .config import DynamojoConfig
-from .exceptions import StaticAttributeError, IndexNotFoundError
-
-if not TYPE_CHECKING:
-    Table = object
-
-
-Session = Session()
-DYNAMOCLIENT = Session.client("dynamodb")
+from .exceptions import (
+    StaticAttributeError,
+    IndexNotFoundError
+)
 
 
 class DynamojoBase(BaseModel):
@@ -132,12 +143,12 @@ class DynamojoBase(BaseModel):
 
         opts = {
             "Key": serialized_key,
-            "TableName": cls._config.table._name,
+            "TableName": cls._config.table,
             **kwargs
         }
 
         res = DYNAMOCLIENT.get_item(**opts)
-        print(res)
+
         if item := res.get("Item"):
             res["Item"] = cls.construct(**cls.deserialize_dynamo(item))
 
@@ -225,7 +236,8 @@ class DynamojoBase(BaseModel):
         opts = {}
 
         if expression_type == "KeyConditionExpression":
-            opts["IndexName"] = self._get_index_from_condition(exp).name
+            print(raw_exp.attribute_name_placeholders.values())
+            opts["IndexName"] = index.name
             opts["KeyConditionExpression"] = raw_exp.condition_expression
             opts["ExpressionAttributeNames"] = raw_exp.attribute_name_placeholders
 
@@ -236,7 +248,7 @@ class DynamojoBase(BaseModel):
             raise TypeError("Invalid Condition type. Must be one of KeyConditionExpression, or FilterExpression")
 
         opts["ExpressionAttributeValues"] = raw_exp.attribute_value_placeholders
-        opts["TableName"] = self._config.table._name
+        opts["TableName"] = self._config.table
 
 
         return opts
@@ -247,7 +259,12 @@ class DynamojoBase(BaseModel):
         Stores our item in Dynamodb
         """
 
-        return self._config.table.put_item(Item=self.dict())
+        item = {
+            k: TypeSerializer(v)
+            for k, g in self.item.item()
+        }
+
+        return DYNAMOCLIENT.put_item(Item=item)
 
     @classmethod
     def get_index_by_name(cls, name: str) -> Index:
