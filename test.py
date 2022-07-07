@@ -1,160 +1,115 @@
-#!/usr/bin/env python3
-from collections import UserDict
+#!/usr/bin/env python3.8
+from datetime import datetime
+from json import dumps
 from os import environ
-from typing import List
+import requests
 
-from boto3 import resource
-from mypy_boto3_dynamodb.service_resource import Table
-
-
-from dynamojo.db import IndexMap, get_indexes, IndexList
-from dynamojo.base import ObjectBase
+from dynamojo.index import IndexMap, get_indexes
+from dynamojo.base import DynamojoBase
+from dynamojo.config import DynamojoConfig
 from boto3.dynamodb.conditions import Key
 
 
-###
-#
-# This is an example class
-#
-##
-TABLE = resource("dynamodb").Table(environ["DYNAMODB_TABLE"])
-
-indexes: List[IndexList] = get_indexes(environ["DYNAMODB_TABLE"])
+TABLE = "test-dynamojo"
+indexes = get_indexes("test-dynamojo")
+DD_API_KEY = environ.get("DD_API_KEY")
+DD_APP_KEY = environ.get("DD_APP_KEY")
 
 
-class Foo(ObjectBase):
-    _table: Table = TABLE
-    indexes = indexes
-    index_map = [
-        IndexMap(
-            index=indexes.table,
-            sortkey="typeNameAndDateSearch",
-            partitionkey="accountId",
-        ),
-        IndexMap(
-            index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
-        ),
-        IndexMap(index=indexes.lsi0, sortkey="dateTime",),
-    ]
+class FooBase(DynamojoBase):
+    accountId: str
+    dateTime: str
+    notificationType: str
+    notificationName: str
+    severity: int
 
-    compound_attributes = {
-        "typeNameAndDateSearch": ["notificationType", "notificationName", "dateTime"]
-    }
+    def save(self):
+        self.dd_log()
+        super().save()
 
-    def __init__(self, **kwargs):
-        self._required_attributes = [
-            "notificationType",
-            "notificationName",
-            "dateTime",
-            "accountId",
-            "message",
-        ]
-        self._optional_attributes = []
-        self._static_attributes = []
-        super().__init__(**kwargs)
+    def sev_level(self, readable: bool = False):
+        readable_map = {
+            1: "info",
+            2: "warning",
+            3: "warning",
+            4: "error",
+            5: "critical"
+        }
+
+        sev = self.item().get("severity", 2)
+
+        return readable_map[sev] if readable else sev
+
+ 
+    def dd_log(self, log_level: str = None):
+        url = " https://http-intake.logs.datadoghq.com/api/v2/logs"
+
+        headers = {
+            "DD-API-KEY": DD_API_KEY,
+            "DD-APP-KEY": DD_APP_KEY
+        }
+
+        message = self.item().get("data", self.item())
+        if not isinstance(message, dict):
+            message = {
+                "log_level": log_level or self.sev_level(readable=True),
+                "message": message
+            }
+        else:
+            message["log_level"] = log_level or self.sev_level(readable=True)
+
+        params = {
+            "ddsource": "AWSNotifications",
+            "service": self.accountId,
+            "message": dumps(message),
+            "ddtags": ",".join([
+                f"account:{self.accountId}",
+                f"tenant:{self.item().get('tenant', '')}"
+            ])
+        }
+        requests.post(url, json=params, headers=headers)
 
 
-###
-#  Using the class we just made
-###
-foo = Foo(
-    notificationType="TEST_ALARM_TYPE",
-    notificationName="notification name test",
-    dateTime="3456778554363456",
-    accountId="MYACCOUNT_12345",
-    message="Test message",
+class MyFoo(FooBase):
+    child_field: str
+    second_child_field: str
+
+    _config = DynamojoConfig(
+        indexes=indexes,
+        index_maps=[
+            IndexMap(index=indexes.table, sortkey="dateTime",
+                     partitionkey="accountId"),
+            IndexMap(
+                index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
+            ),
+            IndexMap(index=indexes.lsi0, sortkey="dateTime"),
+        ],
+        table=TABLE,
+        joined_attributes={
+            "dateTypeAndNameSearch": [
+                "notificationType",
+                "notificationName",
+                "dateTime"
+            ]
+        },
+        static_attributes=["dateTime", "accountId"],
+        mutators=[]  # Mutator(source="dateTime", callable=mutate_sk)
+    )
+
+
+dt = datetime.now().isoformat()
+
+foo = MyFoo(
+    accountId="abcd1234kdhfg",
+    dateTime=dt,
+    notificationName="TestName",
+    notificationType="ALARM",
+    child_field="child",
+    second_child_field="second child",
+    severity=5
 )
 foo.save()
-
-# Parent class will automatically detect that we are using attributes mapped to the table index
-condition = Key("accountId").eq("MYACCOUNT_12345") & Key(
-    "typeNameAndDateSearch"
-).begins_with("TEST_ALARM_TYPE")
-res = Foo.query(condition)
-print(res)
-
-# Parent class will automatically detect we are using gsi0
-condition = Key("notificationType").eq("TEST_ALARM_TYPE") & Key("dateTime").gt("0")
-res = Foo.query(condition)
-print(res)
-
-
-###
-#  This library is very opinionated about how the table's indexes should be structured. Below is Terraform that shows the
-#  correct way to set up the table. Index keys are never referenced directly when using the table. Rely on IndexMap for that.
-#  Since LSI's can only be created at table creation time, and all indexes cost nothing if not used, we go ahead and create
-#  all of the indexes that AWS will allow us to when the table is created.
-##
-
-"""
-resource "aws_dynamodb_table" "test_table" {
-  name         = "test-dynamojo"
-  hash_key     = "pk"
-  range_key    = "sk"
-  billing_mode = "PAY_PER_REQUEST"
-
-  # LSI attributes
-  dynamic "attribute" {
-    for_each = range(5)
-
-    content {
-      name = "lsi${attribute.value}_sk"
-      type = "S"
-    }
-  }
-
-  # GSI pk attributes
-  dynamic "attribute" {
-    for_each = range(20)
-
-    content {
-      name = "gsi${attribute.value}_pk"
-      type = "S"
-    }
-  }
-
-  # GSI sk attributes
-  dynamic "attribute" {
-    for_each = range(20)
-
-    content {
-      name = "gsi${attribute.value}_sk"
-      type = "S"
-    }
-  }
-
-  attribute {
-    name = "pk"
-    type = "S"
-  }
-
-  attribute {
-    name = "sk"
-    type = "S"
-  }
-
-  # GSI's
-  dynamic "global_secondary_index" {
-    for_each = range(20)
-
-    content {
-      name            = "gsi${global_secondary_index.value}"
-      hash_key        = "gsi${global_secondary_index.value}_pk"
-      range_key       = "gsi${global_secondary_index.value}_sk"
-      projection_type = "ALL"
-    }
-  }
-
-  # LSI's
-  dynamic "local_secondary_index" {
-    for_each = range(5)
-
-    content {
-      name            = "lsi${local_secondary_index.value}"
-      range_key       = "lsi${local_secondary_index.value}_sk"
-      projection_type = "ALL"
-    }
-  }
-}
-
-"""
+foo = MyFoo.fetch("abcd1234kdhfg", dt)
+condition = Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
+res = MyFoo.query(KeyConditionExpression=condition)
+print(res["Items"][0].item())
