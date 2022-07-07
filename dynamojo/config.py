@@ -66,4 +66,4 @@ class DynamojoConfig(BaseModel):
                     index_map.index.partitionkey
                 ] = index_map.partitionkey
 
-        self.__index_keys__ = list(set(self.__index_aliases__.values()))
+        self.__index_keys__ = list(set(self.__index_aliases__.keys()))
