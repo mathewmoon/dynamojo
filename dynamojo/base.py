@@ -3,10 +3,8 @@ from logging import getLogger
 from typing import (
     Any,
     Dict,
-    List,
     Union
 )
-from collections import UserString
 
 from boto3.dynamodb.conditions import (
     AttributeBase,
@@ -31,16 +29,6 @@ from .exceptions import (
     StaticAttributeError,
     IndexNotFoundError
 )
-
-
-class CompoundAttr(UserString):
-    sources: List[str]
-    separator: str
-
-    def __init__(self, sources, separator="~"):
-        self.sources = sources
-        self.separator = separator
-        super().__init__()
 
 
 class DynamojoBase(BaseModel):
@@ -68,46 +56,6 @@ class DynamojoBase(BaseModel):
             if k in self._config.mutators:
                 kwargs[k] = self.mutate_attribute(k, v)
 
-    def joined_attributes(self) -> dict:
-        return {
-            attr: self.__getattribute__(attr)
-            for attr in self._config.joined_attributes
-        }
-
-    def index_attributes(self) -> dict:
-        indexes = {}
-        for mapping in self._config.index_maps:
-            if hasattr(mapping, "partitionkey"):
-                indexes[mapping.index.partitionkey] = self.__getattribute__(mapping.partitionkey)
-            if hasattr(mapping, "sortkey"):
-                indexes[mapping.index.sortkey] = self.__getattribute__(mapping.sortkey)
-        return indexes
-
-    def item(self) -> dict:
-        return {
-            **self.dict(),
-            **self.joined_attributes()
-        }
-
-    def _db_item(self) -> dict:
-        return {
-            **self.dict(),
-            **self.joined_attributes(),
-            **self.index_attributes()
-        }
-
-    def mutate_attribute(cls, field: str, val: Any) -> None:
-        return super().__setattr__(
-            field, cls._config.mutators[field].callable(field, val, cls)
-        )
-
-    def _generate_joined_attribute(self, name: str) -> str:
-        item = super().__getattribute__("dict")()
-        sources = super().__getattribute__("_config").joined_attributes.get(name)
-        new_val = [
-            item.get(source, "") for source in sources
-        ]
-        return self._config.join_separator.join(new_val)
 
     def __getattribute__(self, name: str) -> Any:
         if super().__getattribute__("_config").joined_attributes.get(name):
@@ -126,7 +74,7 @@ class DynamojoBase(BaseModel):
             raise AttributeError(
                 f"Attribute '{field}' is a joined field and cannot be set directly"
             )
-        
+
         if field in self._config.__index_keys__:
             raise AttributeError(
                 f"Attribute '{field}' is an index key and cannot be set directly. Use IndexMap() to create an alias"
@@ -142,45 +90,23 @@ class DynamojoBase(BaseModel):
 
         return super().__setattr__(field, val)
 
-    @classmethod
-    def construct_from_db(cls, item):
-        item = cls.deserialize_dynamo(item)
-        res = {}
-        for attr, val in item.items():
-            if not (
-                attr in cls._config.__index_keys__
-                or attr in cls._config.joined_attributes
-            ):
-                res[attr] = val
 
-        return cls.construct(**(res))
-
-    @classmethod
-    def fetch(cls, pk: str, sk: str = None, **kwargs) -> Dict:
-        """
-        Returns an item from the database
-        """
-
-        key = {cls._config.indexes.table.partitionkey: pk}
-
-        if cls._config.indexes.table.sortkey:
-            key[cls._config.indexes.table.sortkey] = sk
-
-        serialized_key = {
-            k: TypeSerializer().serialize(v)
-            for k, v in key.items()
+    def _db_item(self) -> dict:
+        return {
+            **self.dict(),
+            **self.joined_attributes(),
+            **self.index_attributes()
         }
 
-        opts = {
-            "Key": serialized_key,
-            "TableName": cls._config.table,
-            **kwargs
-        }
 
-        res = DYNAMOCLIENT.get_item(**opts)
+    def _generate_joined_attribute(self, name: str) -> str:
+        item = super().__getattribute__("dict")()
+        sources = super().__getattribute__("_config").joined_attributes.get(name)
+        new_val = [
+            item.get(source, "") for source in sources
+        ]
+        return self._config.join_separator.join(new_val)
 
-        if item := res.get("Item"):
-            return cls.construct_from_db(item)
 
     @classmethod
     def _get_index_from_attributes(cls, partitionkey: str = None, sortkey: str = None) -> Index:
@@ -223,13 +149,16 @@ class DynamojoBase(BaseModel):
 
         return matches.get("table", list(matches.values())[0])
 
+
     @classmethod
     def _get_raw_condition_expression(self, exp: ConditionBase, index: Union[Index, str] = None, expression_type="KeyConditionExpression"):
         is_key_condition = expression_type == "KeyConditionExpression"
-        raw_exp = ConditionExpressionBuilder().build_expression(exp, is_key_condition=is_key_condition)
+        raw_exp = ConditionExpressionBuilder().build_expression(
+            exp, is_key_condition=is_key_condition)
 
         if is_key_condition:
-            attribute_names = list(raw_exp.attribute_name_placeholders.values())
+            attribute_names = list(
+                raw_exp.attribute_name_placeholders.values())
             if len(attribute_names) == 1:
                 attribute_names.append(None)
 
@@ -246,7 +175,8 @@ class DynamojoBase(BaseModel):
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
 
         for k, v in raw_exp.attribute_value_placeholders.items():
-            raw_exp.attribute_value_placeholders[k] = TypeSerializer().serialize(v)
+            raw_exp.attribute_value_placeholders[k] = TypeSerializer(
+            ).serialize(v)
 
         opts = {}
 
@@ -260,26 +190,83 @@ class DynamojoBase(BaseModel):
             opts["FilterExpression"] = raw_exp.condition_expression
 
         else:
-            raise TypeError("Invalid Condition type. Must be one of KeyConditionExpression, or FilterExpression")
+            raise TypeError(
+                "Invalid Condition type. Must be one of KeyConditionExpression, or FilterExpression")
 
         opts["ExpressionAttributeValues"] = raw_exp.attribute_value_placeholders
         opts["TableName"] = self._config.table
 
         return opts
 
-    def save(self) -> None:
+
+    @classmethod
+    def construct_from_db(cls, item):
+        item = cls.deserialize_dynamo(item)
+        res = {}
+        for attr, val in item.items():
+            if not (
+                attr in cls._config.__index_keys__
+                or attr in cls._config.joined_attributes
+            ):
+                res[attr] = val
+
+        return cls.construct(**(res))
+
+
+    def delete(self) -> None:
         """
-        Stores our item in Dynamodb
+        Deletes an item from the table
         """
-        item = {
-            k: TypeSerializer().serialize(v)
-            for k, v in self._db_item().items()
+        key = {
+            self._config.indexes.table.partitionkey: self.__index_values__[
+                self._config.indexes.table.partitionkey
+            ]
         }
 
-        return DYNAMOCLIENT.put_item(
-            TableName=self._config.table,
-            Item=item
-        )
+        if self._config.indexes.table.is_composit:
+            key[self._config.indexes.table.sortkey] = self.__index_values__[
+                self._config.indexes.table.sortkey
+            ]
+
+        res = self._config.table.delete_item(Key=key)
+
+        return res
+
+
+    @staticmethod
+    def deserialize_dynamo(data):
+        return {
+            k: TypeDeserializer().deserialize(v)
+            for k, v in data.items()
+        }
+
+    @classmethod
+    def fetch(cls, pk: str, sk: str = None, **kwargs) -> Dict:
+        """
+        Returns an item from the database
+        """
+
+        key = {cls._config.indexes.table.partitionkey: pk}
+
+        if cls._config.indexes.table.sortkey:
+            key[cls._config.indexes.table.sortkey] = sk
+
+        serialized_key = {
+            k: TypeSerializer().serialize(v)
+            for k, v in key.items()
+        }
+
+        opts = {
+            "Key": serialized_key,
+            "TableName": cls._config.table,
+            **kwargs
+        }
+
+        res = DYNAMOCLIENT.get_item(**opts)
+
+        if item := res.get("Item"):
+            return cls.construct_from_db(item)
+
 
     @classmethod
     def get_index_by_name(cls, name: str) -> Index:
@@ -287,6 +274,37 @@ class DynamojoBase(BaseModel):
             return cls._config.indexes[name]
         except KeyError:
             raise IndexNotFoundError(f"Index {name} does not exist")
+
+
+    def index_attributes(self) -> dict:
+        indexes = {}
+        for mapping in self._config.index_maps:
+            if hasattr(mapping, "partitionkey"):
+                indexes[mapping.index.partitionkey] = self.__getattribute__(mapping.partitionkey)
+            if hasattr(mapping, "sortkey"):
+                indexes[mapping.index.sortkey] = self.__getattribute__(mapping.sortkey)
+        return indexes
+
+
+    def item(self) -> dict:
+        return {
+            **self.dict(),
+            **self.joined_attributes()
+        }
+
+
+    def joined_attributes(self) -> dict:
+        return {
+            attr: self.__getattribute__(attr)
+            for attr in self._config.joined_attributes
+        }
+
+
+    def mutate_attribute(cls, field: str, val: Any) -> None:
+        return super().__setattr__(
+            field, cls._config.mutators[field].callable(field, val, cls)
+        )
+
 
     @classmethod
     def query(
@@ -321,7 +339,8 @@ class DynamojoBase(BaseModel):
         if ExclusiveStartKey is not None:
             opts["ExclusiveStartKey"] = ExclusiveStartKey
 
-        msg = f"Querying with index `{opts['IndexName']}`" if opts.get("IndexName") else "Querying with table index"
+        msg = f"Querying with index `{opts['IndexName']}`" if opts.get(
+            "IndexName") else "Querying with table index"
         getLogger().info(msg)
 
         res = DYNAMOCLIENT.query(**opts)
@@ -333,28 +352,17 @@ class DynamojoBase(BaseModel):
 
         return res
 
-    def delete(self) -> None:
+
+    def save(self) -> None:
         """
-        Deletes an item from the table
+        Stores our item in Dynamodb
         """
-        key = {
-            self._config.indexes.table.partitionkey: self.__index_values__[
-                self._config.indexes.table.partitionkey
-            ]
+        item = {
+            k: TypeSerializer().serialize(v)
+            for k, v in self._db_item().items()
         }
 
-        if self._config.indexes.table.is_composit:
-            key[self._config.indexes.table.sortkey] = self.__index_values__[
-                self._config.indexes.table.sortkey
-            ]
-
-        res = self._config.table.delete_item(Key=key)
-
-        return res
-
-    @staticmethod
-    def deserialize_dynamo(data):
-        return {
-            k: TypeDeserializer().deserialize(v)
-            for k, v in data.items()
-        }
+        return DYNAMOCLIENT.put_item(
+            TableName=self._config.table,
+            Item=item
+        )
