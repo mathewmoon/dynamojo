@@ -1,5 +1,6 @@
 #!/usr/bin/env python3.8
 from logging import getLogger
+from multiprocessing import Condition
 from typing import (
     Any,
     Dict,
@@ -178,22 +179,47 @@ class DynamojoBase(BaseModel):
             raw_exp.attribute_value_placeholders[k] = TypeSerializer(
             ).serialize(v)
 
-        opts = {}
+        opts = {
+            "ExpressionAttributeNames": {},
+            "ExpressionAttributeValues": {},
+            expression_type: raw_exp.condition_expression
+        }
+
+        # We have to do the dance below to keep queries that use KeyConditionExpression
+        # and FilterExpressionfrom having their name/value placeholders clobber each other
+        # when the dicts are merged to for the full query args
+        original_name_prefix = "#n"
+        original_value_prefix = ":v"
 
         if expression_type == "KeyConditionExpression":
+            new_name_prefix = "#key_name"
+            new_value_prefix = ":key_value"
             if index.name != "table":
                 opts["IndexName"] = index.name
-            opts["KeyConditionExpression"] = raw_exp.condition_expression
-            opts["ExpressionAttributeNames"] = raw_exp.attribute_name_placeholders
 
         elif expression_type == "FilterExpression":
-            opts["FilterExpression"] = raw_exp.condition_expression
+            new_name_prefix = "#attribute_name"
+            new_value_prefix = ":attribute_value"
+
+        elif expression_type == "ConditionExpression":
+            new_name_prefix = "#condition_attribute_name"
+            new_value_prefix = ":condition_attribute_value"
 
         else:
             raise TypeError(
-                "Invalid Condition type. Must be one of KeyConditionExpression, or FilterExpression")
+                "Invalid Condition type. Must be one of KeyConditionExpression, ConditionExpression, or FilterExpression")
 
-        opts["ExpressionAttributeValues"] = raw_exp.attribute_value_placeholders
+        for key, val in raw_exp.attribute_name_placeholders.items():
+            new_key = key.replace(original_name_prefix, new_name_prefix)
+            opts["ExpressionAttributeNames"][new_key] = val
+            opts[expression_type] = opts[expression_type].replace(key, new_key)
+
+        for key, val in raw_exp.attribute_value_placeholders.items():
+            new_key = key.replace(original_value_prefix, new_value_prefix)
+            opts["ExpressionAttributeValues"][new_key] = val
+            opts[expression_type] = opts[expression_type].replace(key, new_key)
+
+
         opts["TableName"] = self._config.table
 
         return opts
@@ -331,16 +357,20 @@ class DynamojoBase(BaseModel):
         ))
 
         if FilterExpression is not None:
-            opts.update(cls._get_raw_condition_expression(
+            filter_opts = cls._get_raw_condition_expression(
                 exp=FilterExpression,
                 expression_type="FilterExpression"
-            ))
+            )
+            opts["ExpressionAttributeNames"].update(filter_opts.pop("ExpressionAttributeNames"))
+            opts["ExpressionAttributeValues"].update(filter_opts.pop("ExpressionAttributeValues"))
+            opts.update(filter_opts)
 
         if ExclusiveStartKey is not None:
             opts["ExclusiveStartKey"] = ExclusiveStartKey
 
         msg = f"Querying with index `{opts['IndexName']}`" if opts.get(
             "IndexName") else "Querying with table index"
+
         getLogger().info(msg)
 
         res = DYNAMOCLIENT.query(**opts)
@@ -352,17 +382,30 @@ class DynamojoBase(BaseModel):
 
         return res
 
-
-    def save(self) -> None:
+    def save(
+        self,
+        ConditionExpression: ConditionBase = None,
+        **kwargs
+    ) -> None:
         """
         Stores our item in Dynamodb
         """
+
         item = {
             k: TypeSerializer().serialize(v)
             for k, v in self._db_item().items()
         }
 
-        return DYNAMOCLIENT.put_item(
-            TableName=self._config.table,
-            Item=item
-        )
+        opts = {
+            "TableName": self._config.table,
+            "Item": item,
+            **kwargs
+        }
+        if ConditionExpression:
+            exp = self._get_raw_condition_expression(
+                ConditionExpression,
+                expression_type="ConditionExpression"
+            )
+            opts.update(exp)
+
+        return DYNAMOCLIENT.put_item(**opts)

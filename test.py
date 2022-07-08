@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.8
+#!/usr/bin/env python3
 from datetime import datetime
 from json import dumps
 from os import environ
@@ -7,7 +7,7 @@ import requests
 from dynamojo.index import IndexMap, get_indexes
 from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Key, Attr
 
 
 TABLE = "test-dynamojo"
@@ -23,9 +23,11 @@ class FooBase(DynamojoBase):
     notificationName: str
     severity: int
 
-    def save(self):
+
+    def save(self, **kwargs):
         self.dd_log()
-        super().save()
+        super().save(**kwargs)
+
 
     def sev_level(self, readable: bool = False):
         readable_map = {
@@ -99,6 +101,7 @@ class MyFoo(FooBase):
 
 dt = datetime.now().isoformat()
 
+# Making a foo
 foo = MyFoo(
     accountId="abcd1234kdhfg",
     dateTime=dt,
@@ -108,8 +111,50 @@ foo = MyFoo(
     second_child_field="second child",
     severity=5
 )
+print(f"Made object foo: {foo}")
+
+# Fails because of the condition check
+print("\n\nTrying to save with a condition check that will return False")
+try:
+    foo.save(
+        ConditionExpression=Attr("foo").eq("bar")
+    )
+except Exception as e:
+    print(e)
+
+# But succeeds without it
 foo.save()
+
+# Let's do a get_item() operation. The first arg is always the partition key
+# the second (optional if the table doesn't use a sortkey) argument is the sortkey
+print("\n\nTrying MyFoo.fetch() to get the object we just created.")
 foo = MyFoo.fetch("abcd1234kdhfg", dt)
+print(f"Got it {foo}")
+
+# Now lets do a query to get back the same item. We can use a filter expression too
+print("\n\nRunning a query that will return the same item using MyFoo.query() with a condition and filter expression")
 condition = Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
-res = MyFoo.query(KeyConditionExpression=condition)
-print(res["Items"][0].item())
+filter    = Attr("notificationName").eq("TestName")
+
+# Notice that we don't have to specify the index. Dynamojo will figure out what index to use.
+# It will always prefer the table. If there are multiple suitable indexes other than the table index
+# it will take the first one. You can however specify an index to use by passing IndexName as either a
+# string or an Index() object.
+res = MyFoo.query(
+    KeyConditionExpression=condition,
+    FilterExpression=filter
+)
+
+print(f"""Returned an item from the query: {res["Items"][0]}""")
+
+# Now lets do one that filters out all results
+print("\n\nNow we are going to add a FilterExpression that we know won't match")
+filter = Attr("notificationName").eq("YoMamma")
+
+res = MyFoo.query(
+    KeyConditionExpression=condition,
+    FilterExpression=filter
+)
+
+# You can see that there are no results
+print(f"""Query with filter returned {len(res["Items"])} items""")
