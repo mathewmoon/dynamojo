@@ -300,7 +300,7 @@ class DynamojoBase(BaseModel):
         **kwargs: Dict[str, Any],
     ) -> Dict:
         """
-        Runs a Dynamodb query using a condition from db.Inde x
+        Runs a Dynamodb query using a condition from db.Index
         """
 
         opts = {**kwargs, "Limit": Limit}
