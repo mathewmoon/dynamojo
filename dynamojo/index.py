@@ -22,7 +22,13 @@ class Index:
     partion/sort key names from the developer using them.
     """
 
-    def __init__(self, *, name: str, sortkey: str, partitionkey: str = None,) -> None:
+    def __init__(
+        self,
+        *,
+        name: str,
+        sortkey: str,
+        partitionkey: str = None,
+    ) -> None:
 
         self.__partitionkey = partitionkey if partitionkey else None
         self.__sortkey = sortkey if sortkey else None
@@ -31,22 +37,22 @@ class Index:
 
     @property
     def partitionkey(self) -> str:
-        """ The partition key of the index as Key(partition key name)"""
+        """The partition key of the index as Key(partition key name)"""
         return self.__partitionkey
 
     @property
     def sortkey(self) -> str:
-        """ The sort key of the index as Key(sort key name)"""
+        """The sort key of the index as Key(sort key name)"""
         return self.__sortkey
 
     @property
     def table_index(self) -> bool:
-        """ Whether or not this index is the table index """
+        """Whether or not this index is the table index"""
         return isinstance(self, TableIndex)
 
     @property
     def name(self) -> str:
-        """ Name of the index """
+        """Name of the index"""
         return self.__name
 
 

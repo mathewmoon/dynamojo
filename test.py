@@ -23,11 +23,9 @@ class FooBase(DynamojoBase):
     notificationName: str
     severity: int
 
-
     def save(self, **kwargs):
         self.dd_log()
         super().save(**kwargs)
-
 
     def sev_level(self, readable: bool = False):
         readable_map = {
@@ -35,27 +33,23 @@ class FooBase(DynamojoBase):
             2: "warning",
             3: "warning",
             4: "error",
-            5: "critical"
+            5: "critical",
         }
 
         sev = self.item().get("severity", 2)
 
         return readable_map[sev] if readable else sev
 
- 
     def dd_log(self, log_level: str = None):
         url = " https://http-intake.logs.datadoghq.com/api/v2/logs"
 
-        headers = {
-            "DD-API-KEY": DD_API_KEY,
-            "DD-APP-KEY": DD_APP_KEY
-        }
+        headers = {"DD-API-KEY": DD_API_KEY, "DD-APP-KEY": DD_APP_KEY}
 
         message = self.item().get("data", self.item())
         if not isinstance(message, dict):
             message = {
                 "log_level": log_level or self.sev_level(readable=True),
-                "message": message
+                "message": message,
             }
         else:
             message["log_level"] = log_level or self.sev_level(readable=True)
@@ -64,10 +58,9 @@ class FooBase(DynamojoBase):
             "ddsource": "AWSNotifications",
             "service": self.accountId,
             "message": dumps(message),
-            "ddtags": ",".join([
-                f"account:{self.accountId}",
-                f"tenant:{self.item().get('tenant', '')}"
-            ])
+            "ddtags": ",".join(
+                [f"account:{self.accountId}", f"tenant:{self.item().get('tenant', '')}"]
+            ),
         }
         requests.post(url, json=params, headers=headers)
 
@@ -79,8 +72,7 @@ class MyFoo(FooBase):
     _config = DynamojoConfig(
         indexes=indexes,
         index_maps=[
-            IndexMap(index=indexes.table, sortkey="dateTime",
-                     partitionkey="accountId"),
+            IndexMap(index=indexes.table, sortkey="dateTime", partitionkey="accountId"),
             IndexMap(
                 index=indexes.gsi0, sortkey="dateTime", partitionkey="notificationType"
             ),
@@ -91,11 +83,11 @@ class MyFoo(FooBase):
             "dateTypeAndNameSearch": [
                 "notificationType",
                 "notificationName",
-                "dateTime"
+                "dateTime",
             ]
         },
         static_attributes=["dateTime", "accountId"],
-        mutators=[]  # Mutator(source="dateTime", callable=mutate_sk)
+        mutators=[],  # Mutator(source="dateTime", callable=mutate_sk)
     )
 
 
@@ -109,16 +101,14 @@ foo = MyFoo(
     notificationType="ALARM",
     child_field="child",
     second_child_field="second child",
-    severity=5
+    severity=5,
 )
 print(f"Made object foo: {foo}")
 
 # Fails because of the condition check
 print("\n\nTrying to save with a condition check that will return False")
 try:
-    foo.save(
-        ConditionExpression=Attr("foo").eq("bar")
-    )
+    foo.save(ConditionExpression=Attr("foo").eq("bar"))
 except Exception as e:
     print(e)
 
@@ -132,18 +122,17 @@ foo = MyFoo.fetch("abcd1234kdhfg", dt)
 print(f"Got it {foo}")
 
 # Now lets do a query to get back the same item. We can use a filter expression too
-print("\n\nRunning a query that will return the same item using MyFoo.query() with a condition and filter expression")
+print(
+    "\n\nRunning a query that will return the same item using MyFoo.query() with a condition and filter expression"
+)
 condition = Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
-filter    = Attr("notificationName").eq("TestName")
+filter = Attr("notificationName").eq("TestName")
 
 # Notice that we don't have to specify the index. Dynamojo will figure out what index to use.
 # It will always prefer the table. If there are multiple suitable indexes other than the table index
 # it will take the first one. You can however specify an index to use by passing IndexName as either a
 # string or an Index() object.
-res = MyFoo.query(
-    KeyConditionExpression=condition,
-    FilterExpression=filter
-)
+res = MyFoo.query(KeyConditionExpression=condition, FilterExpression=filter)
 
 print(f"""Returned an item from the query: {res["Items"][0]}""")
 
@@ -151,10 +140,7 @@ print(f"""Returned an item from the query: {res["Items"][0]}""")
 print("\n\nNow we are going to add a FilterExpression that we know won't match")
 filter = Attr("notificationName").eq("YoMamma")
 
-res = MyFoo.query(
-    KeyConditionExpression=condition,
-    FilterExpression=filter
-)
+res = MyFoo.query(KeyConditionExpression=condition, FilterExpression=filter)
 
 # You can see that there are no results
 print(f"""Query with filter returned {len(res["Items"])} items""")

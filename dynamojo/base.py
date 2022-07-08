@@ -1,34 +1,18 @@
 #!/usr/bin/env python3.8
 from logging import getLogger
-from typing import (
-    Any,
-    Dict,
-    Union
-)
+from typing import Any, Dict, Union
 
 from boto3.dynamodb.conditions import (
     AttributeBase,
     ConditionBase,
-    ConditionExpressionBuilder
+    ConditionExpressionBuilder,
 )
-from boto3.dynamodb.types import (
-    TypeSerializer,
-    TypeDeserializer
-)
-from pydantic import (
-    BaseModel,
-    PrivateAttr
-)
+from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+from pydantic import BaseModel, PrivateAttr
 from .boto import DYNAMOCLIENT
-from .index import (
-    Index,
-    Lsi
-)
+from .index import Index, Lsi
 from .config import DynamojoConfig
-from .exceptions import (
-    StaticAttributeError,
-    IndexNotFoundError
-)
+from .exceptions import StaticAttributeError, IndexNotFoundError
 
 
 class DynamojoBase(BaseModel):
@@ -55,19 +39,13 @@ class DynamojoBase(BaseModel):
             if k in self._config.mutators:
                 kwargs[k] = self.mutate_attribute(k, v)
 
-
     def __getattribute__(self, name: str) -> Any:
         if super().__getattribute__("_config").joined_attributes.get(name):
             return self._generate_joined_attribute(name)
 
         return super().__getattribute__(name)
 
-
-    def __setattr__(
-        self,
-        field: str,
-        val: Any
-    ) -> None:
+    def __setattr__(self, field: str, val: Any) -> None:
         # Mutations should happen first
         if field in self._config.mutators:
             val = self.mutate_attribute(field, val)
@@ -92,28 +70,18 @@ class DynamojoBase(BaseModel):
 
         return super().__setattr__(field, val)
 
-
     def _db_item(self) -> Dict[str, Any]:
-        return {
-            **self.dict(),
-            **self.joined_attributes(),
-            **self.index_attributes()
-        }
-
+        return {**self.dict(), **self.joined_attributes(), **self.index_attributes()}
 
     def _generate_joined_attribute(self, name: str) -> str:
         item = super().__getattribute__("dict")()
         sources = super().__getattribute__("_config").joined_attributes.get(name)
-        new_val = [
-            item.get(source, "") for source in sources
-        ]
+        new_val = [item.get(source, "") for source in sources]
         return self._config.join_separator.join(new_val)
-
 
     @classmethod
     def _get_index_from_attributes(
-        cls,partitionkey: str = None,
-        sortkey: str = None
+        cls, partitionkey: str = None, sortkey: str = None
     ) -> Index:
         for x in cls._config.index_maps:
             if x.index.name == "table":
@@ -138,7 +106,8 @@ class DynamojoBase(BaseModel):
                 sortkey is None
                 and partitionkey == pk
             ) or (
-                partitionkey is not None and sortkey is not None
+                partitionkey is not None
+                and sortkey is not None
                 and (
                     pk == partitionkey
                     # Catch cases where our key is not composite (yuck!)
@@ -154,21 +123,20 @@ class DynamojoBase(BaseModel):
 
         return matches.get("table", list(matches.values())[0])
 
-
     @classmethod
     def _get_raw_condition_expression(
         self,
         exp: ConditionBase,
         index: Union[Index, str] = None,
-        expression_type="KeyConditionExpression"
+        expression_type="KeyConditionExpression",
     ):
         is_key_condition = expression_type == "KeyConditionExpression"
         raw_exp = ConditionExpressionBuilder().build_expression(
-            exp, is_key_condition=is_key_condition)
+            exp, is_key_condition=is_key_condition
+        )
 
         if is_key_condition:
-            attribute_names = list(
-                raw_exp.attribute_name_placeholders.values())
+            attribute_names = list(raw_exp.attribute_name_placeholders.values())
             if len(attribute_names) == 1:
                 attribute_names.append(None)
 
@@ -180,18 +148,19 @@ class DynamojoBase(BaseModel):
 
             for placeholder, attr in raw_exp.attribute_name_placeholders.items():
                 if attr == attribute_names[0]:
-                    raw_exp.attribute_name_placeholders[placeholder] = index.partitionkey
+                    raw_exp.attribute_name_placeholders[
+                        placeholder
+                    ] = index.partitionkey
                 if len(attribute_names) == 2 and attr == attribute_names[1]:
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
 
         for k, v in raw_exp.attribute_value_placeholders.items():
-            raw_exp.attribute_value_placeholders[k] = TypeSerializer(
-            ).serialize(v)
+            raw_exp.attribute_value_placeholders[k] = TypeSerializer().serialize(v)
 
         opts = {
             "ExpressionAttributeNames": {},
             "ExpressionAttributeValues": {},
-            expression_type: raw_exp.condition_expression
+            expression_type: raw_exp.condition_expression,
         }
 
         # We have to do the dance below to keep queries that use KeyConditionExpression
@@ -216,7 +185,8 @@ class DynamojoBase(BaseModel):
 
         else:
             raise TypeError(
-                "Invalid Condition type. Must be one of KeyConditionExpression, ConditionExpression, or FilterExpression")
+                "Invalid Condition type. Must be one of KeyConditionExpression, ConditionExpression, or FilterExpression"
+            )
 
         for key, val in raw_exp.attribute_name_placeholders.items():
             new_key = key.replace(original_name_prefix, new_name_prefix)
@@ -232,12 +202,8 @@ class DynamojoBase(BaseModel):
 
         return opts
 
-
     @classmethod
-    def construct_from_db(
-        cls,
-        item: Dict
-    ):
+    def construct_from_db(cls, item: Dict):
         item = cls.deserialize_dynamo(item)
         res = {}
         for attr, val in item.items():
@@ -248,7 +214,6 @@ class DynamojoBase(BaseModel):
                 res[attr] = val
 
         return cls.construct(**(res))
-
 
     def delete(self) -> None:
         """
@@ -269,21 +234,12 @@ class DynamojoBase(BaseModel):
 
         return res
 
-
     @staticmethod
     def deserialize_dynamo(data: Dict[Any, Any]):
-        return {
-            k: TypeDeserializer().deserialize(v)
-            for k, v in data.items()
-        }
+        return {k: TypeDeserializer().deserialize(v) for k, v in data.items()}
 
     @classmethod
-    def fetch(
-        cls,
-        pk: str,
-        sk: str = None,
-        **kwargs: Dict[str, Any]
-    ) -> Dict:
+    def fetch(cls, pk: str, sk: str = None, **kwargs: Dict[str, Any]) -> Dict:
         """
         Returns an item from the database
         """
@@ -293,67 +249,45 @@ class DynamojoBase(BaseModel):
         if cls._config.indexes.table.sortkey:
             key[cls._config.indexes.table.sortkey] = sk
 
-        serialized_key = {
-            k: TypeSerializer().serialize(v)
-            for k, v in key.items()
-        }
+        serialized_key = {k: TypeSerializer().serialize(v) for k, v in key.items()}
 
-        opts = {
-            "Key": serialized_key,
-            "TableName": cls._config.table,
-            **kwargs
-        }
+        opts = {"Key": serialized_key, "TableName": cls._config.table, **kwargs}
 
         res = DYNAMOCLIENT.get_item(**opts)
 
         if item := res.get("Item"):
             return cls.construct_from_db(item)
 
-
     @classmethod
-    def get_index_by_name(
-        cls,
-        name: str
-    ) -> Index:
+    def get_index_by_name(cls, name: str) -> Index:
         try:
             return cls._config.indexes[name]
         except KeyError:
             raise IndexNotFoundError(f"Index {name} does not exist")
 
-
     def index_attributes(self) -> Dict:
         indexes = {}
         for mapping in self._config.index_maps:
             if hasattr(mapping, "partitionkey"):
-                indexes[mapping.index.partitionkey] = self.__getattribute__(mapping.partitionkey)
+                indexes[mapping.index.partitionkey] = self.__getattribute__(
+                    mapping.partitionkey
+                )
             if hasattr(mapping, "sortkey"):
                 indexes[mapping.index.sortkey] = self.__getattribute__(mapping.sortkey)
         return indexes
 
-
     def item(self) -> Dict:
-        return {
-            **self.dict(),
-            **self.joined_attributes()
-        }
-
+        return {**self.dict(), **self.joined_attributes()}
 
     def joined_attributes(self) -> Dict:
         return {
-            attr: self.__getattribute__(attr)
-            for attr in self._config.joined_attributes
+            attr: self.__getattribute__(attr) for attr in self._config.joined_attributes
         }
 
-
-    def mutate_attribute(
-        cls,
-        field: str,
-        val: Any
-    ) -> None:
+    def mutate_attribute(cls, field: str, val: Any) -> None:
         return super().__setattr__(
             field, cls._config.mutators[field].callable(field, val, cls)
         )
-
 
     @classmethod
     def query(
@@ -363,71 +297,60 @@ class DynamojoBase(BaseModel):
         FilterExpression: AttributeBase = None,
         Limit: int = 1000,
         ExclusiveStartKey: dict = None,
-        **kwargs: Dict[str, Any]
+        **kwargs: Dict[str, Any],
     ) -> Dict:
         """
         Runs a Dynamodb query using a condition from db.Inde x
         """
 
-        opts = {
-            **kwargs,
-            "Limit": Limit
-        }
+        opts = {**kwargs, "Limit": Limit}
 
-        opts.update(cls._get_raw_condition_expression(
-            exp=KeyConditionExpression,
-            index=Index
-        ))
+        opts.update(
+            cls._get_raw_condition_expression(exp=KeyConditionExpression, index=Index)
+        )
 
         if FilterExpression is not None:
             filter_opts = cls._get_raw_condition_expression(
-                exp=FilterExpression,
-                expression_type="FilterExpression"
+                exp=FilterExpression, expression_type="FilterExpression"
             )
-            opts["ExpressionAttributeNames"].update(filter_opts.pop("ExpressionAttributeNames"))
-            opts["ExpressionAttributeValues"].update(filter_opts.pop("ExpressionAttributeValues"))
+            opts["ExpressionAttributeNames"].update(
+                filter_opts.pop("ExpressionAttributeNames")
+            )
+            opts["ExpressionAttributeValues"].update(
+                filter_opts.pop("ExpressionAttributeValues")
+            )
             opts.update(filter_opts)
 
         if ExclusiveStartKey is not None:
             opts["ExclusiveStartKey"] = ExclusiveStartKey
 
-        msg = f"Querying with index `{opts['IndexName']}`" if opts.get(
-            "IndexName") else "Querying with table index"
+        msg = (
+            f"Querying with index `{opts['IndexName']}`"
+            if opts.get("IndexName")
+            else "Querying with table index"
+        )
 
         getLogger().info(msg)
 
         res = DYNAMOCLIENT.query(**opts)
 
-        res["Items"] = [
-            cls(**cls.deserialize_dynamo(item))
-            for item in res["Items"]
-        ]
+        res["Items"] = [cls(**cls.deserialize_dynamo(item)) for item in res["Items"]]
 
         return res
 
     def save(
-        self,
-        ConditionExpression: ConditionBase = None,
-        **kwargs: Dict[str, Any]
+        self, ConditionExpression: ConditionBase = None, **kwargs: Dict[str, Any]
     ) -> None:
         """
         Stores our item in Dynamodb
         """
 
-        item = {
-            k: TypeSerializer().serialize(v)
-            for k, v in self._db_item().items()
-        }
+        item = {k: TypeSerializer().serialize(v) for k, v in self._db_item().items()}
 
-        opts = {
-            "TableName": self._config.table,
-            "Item": item,
-            **kwargs
-        }
+        opts = {"TableName": self._config.table, "Item": item, **kwargs}
         if ConditionExpression:
             exp = self._get_raw_condition_expression(
-                ConditionExpression,
-                expression_type="ConditionExpression"
+                ConditionExpression, expression_type="ConditionExpression"
             )
             opts.update(exp)
 

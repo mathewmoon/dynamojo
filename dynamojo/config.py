@@ -1,20 +1,8 @@
-from typing import (
-    Union,
-    Callable,
-    List,
-    Dict
-)
+from typing import Union, Callable, List, Dict
 
-from pydantic import (
-    BaseModel,
-    PrivateAttr
-)
+from pydantic import BaseModel, PrivateAttr
 
-from .index import (
-    IndexList,
-    IndexMap,
-    Mutator
-)
+from .index import IndexList, IndexMap, Mutator
 
 
 class DynamojoConfig(BaseModel):
