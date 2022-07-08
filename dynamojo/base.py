@@ -1,6 +1,5 @@
 #!/usr/bin/env python3.8
 from logging import getLogger
-from multiprocessing import Condition
 from typing import (
     Any,
     Dict,
@@ -36,7 +35,6 @@ class DynamojoBase(BaseModel):
 
     _config: DynamojoConfig = PrivateAttr()
 
-
     def __init__(self, **kwargs: Dict[str, Any]) -> None:
 
         super().__init__(**kwargs)
@@ -65,8 +63,11 @@ class DynamojoBase(BaseModel):
         return super().__getattribute__(name)
 
 
-    def __setattr__(self, field: str, val: Any) -> None:
-
+    def __setattr__(
+        self,
+        field: str,
+        val: Any
+    ) -> None:
         # Mutations should happen first
         if field in self._config.mutators:
             val = self.mutate_attribute(field, val)
@@ -92,7 +93,7 @@ class DynamojoBase(BaseModel):
         return super().__setattr__(field, val)
 
 
-    def _db_item(self) -> dict:
+    def _db_item(self) -> Dict[str, Any]:
         return {
             **self.dict(),
             **self.joined_attributes(),
@@ -110,7 +111,10 @@ class DynamojoBase(BaseModel):
 
 
     @classmethod
-    def _get_index_from_attributes(cls, partitionkey: str = None, sortkey: str = None) -> Index:
+    def _get_index_from_attributes(
+        cls,partitionkey: str = None,
+        sortkey: str = None
+    ) -> Index:
         for x in cls._config.index_maps:
             if x.index.name == "table":
                 table_index_map = x
@@ -152,7 +156,12 @@ class DynamojoBase(BaseModel):
 
 
     @classmethod
-    def _get_raw_condition_expression(self, exp: ConditionBase, index: Union[Index, str] = None, expression_type="KeyConditionExpression"):
+    def _get_raw_condition_expression(
+        self,
+        exp: ConditionBase,
+        index: Union[Index, str] = None,
+        expression_type="KeyConditionExpression"
+    ):
         is_key_condition = expression_type == "KeyConditionExpression"
         raw_exp = ConditionExpressionBuilder().build_expression(
             exp, is_key_condition=is_key_condition)
@@ -219,14 +228,16 @@ class DynamojoBase(BaseModel):
             opts["ExpressionAttributeValues"][new_key] = val
             opts[expression_type] = opts[expression_type].replace(key, new_key)
 
-
         opts["TableName"] = self._config.table
 
         return opts
 
 
     @classmethod
-    def construct_from_db(cls, item):
+    def construct_from_db(
+        cls,
+        item: Dict
+    ):
         item = cls.deserialize_dynamo(item)
         res = {}
         for attr, val in item.items():
@@ -260,14 +271,19 @@ class DynamojoBase(BaseModel):
 
 
     @staticmethod
-    def deserialize_dynamo(data):
+    def deserialize_dynamo(data: Dict[Any, Any]):
         return {
             k: TypeDeserializer().deserialize(v)
             for k, v in data.items()
         }
 
     @classmethod
-    def fetch(cls, pk: str, sk: str = None, **kwargs) -> Dict:
+    def fetch(
+        cls,
+        pk: str,
+        sk: str = None,
+        **kwargs: Dict[str, Any]
+    ) -> Dict:
         """
         Returns an item from the database
         """
@@ -295,14 +311,17 @@ class DynamojoBase(BaseModel):
 
 
     @classmethod
-    def get_index_by_name(cls, name: str) -> Index:
+    def get_index_by_name(
+        cls,
+        name: str
+    ) -> Index:
         try:
             return cls._config.indexes[name]
         except KeyError:
             raise IndexNotFoundError(f"Index {name} does not exist")
 
 
-    def index_attributes(self) -> dict:
+    def index_attributes(self) -> Dict:
         indexes = {}
         for mapping in self._config.index_maps:
             if hasattr(mapping, "partitionkey"):
@@ -312,21 +331,25 @@ class DynamojoBase(BaseModel):
         return indexes
 
 
-    def item(self) -> dict:
+    def item(self) -> Dict:
         return {
             **self.dict(),
             **self.joined_attributes()
         }
 
 
-    def joined_attributes(self) -> dict:
+    def joined_attributes(self) -> Dict:
         return {
             attr: self.__getattribute__(attr)
             for attr in self._config.joined_attributes
         }
 
 
-    def mutate_attribute(cls, field: str, val: Any) -> None:
+    def mutate_attribute(
+        cls,
+        field: str,
+        val: Any
+    ) -> None:
         return super().__setattr__(
             field, cls._config.mutators[field].callable(field, val, cls)
         )
@@ -340,7 +363,7 @@ class DynamojoBase(BaseModel):
         FilterExpression: AttributeBase = None,
         Limit: int = 1000,
         ExclusiveStartKey: dict = None,
-        **kwargs
+        **kwargs: Dict[str, Any]
     ) -> Dict:
         """
         Runs a Dynamodb query using a condition from db.Inde x
@@ -385,7 +408,7 @@ class DynamojoBase(BaseModel):
     def save(
         self,
         ConditionExpression: ConditionBase = None,
-        **kwargs
+        **kwargs: Dict[str, Any]
     ) -> None:
         """
         Stores our item in Dynamodb
