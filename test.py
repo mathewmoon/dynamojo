@@ -15,7 +15,6 @@ indexes = get_indexes("test-dynamojo")
 DD_API_KEY = environ.get("DD_API_KEY")
 DD_APP_KEY = environ.get("DD_APP_KEY")
 
-
 class FooBase(DynamojoBase):
     accountId: str
     dateTime: str
@@ -135,8 +134,7 @@ filter = Attr("notificationName").eq("TestName")
 # it will take the first one. You can however specify an index to use by passing IndexName as either a
 # string or an Index() object.
 res = MyFoo.query(KeyConditionExpression=condition, FilterExpression=filter)
-
-print(f"""Returned an item from the query: {res["Items"][0]}""")
+print(f"""Returned an item from the query: {res.Items[0]}""")
 
 # Now lets do one that filters out all results
 print("\n\nNow we are going to add a FilterExpression that we know won't match")
@@ -145,4 +143,5 @@ filter = Attr("notificationName").eq("YoMamma")
 res = MyFoo.query(KeyConditionExpression=condition, FilterExpression=filter)
 
 # You can see that there are no results
-print(f"""Query with filter returned {len(res["Items"])} items""")
+print(f"""Query with filter returned {len(res.Items)} items""")
+print(res)

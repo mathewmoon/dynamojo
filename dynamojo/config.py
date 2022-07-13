@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from typing import Union, Callable, List, Dict
 
 from pydantic import BaseModel, PrivateAttr
