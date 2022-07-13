@@ -71,7 +71,12 @@ class DynamojoBase(BaseModel):
         return super().__setattr__(field, val)
 
     def _db_item(self) -> Dict[str, Any]:
-        return {**self.dict(), **self.joined_attributes(), **self.index_attributes()}
+        item = {**self.dict(), **self.joined_attributes(), **self.index_attributes()}
+        if not self._config.store_aliases:
+            for attr in self._config.__index_aliases__.values():
+                if attr in item:
+                    del item[attr]
+        return item
 
     def _generate_joined_attribute(self, name: str) -> str:
         item = super().__getattribute__("dict")()
@@ -206,12 +211,17 @@ class DynamojoBase(BaseModel):
     def construct_from_db(cls, item: Dict):
         item = cls.deserialize_dynamo(item)
         res = {}
+
         for attr, val in item.items():
             if not (
                 attr in cls._config.__index_keys__
                 or attr in cls._config.joined_attributes
             ):
                 res[attr] = val
+
+        if not cls._config.store_aliases:
+            for index, alias in cls._config.__index_aliases__.items():
+                res[alias] = item[index]
 
         return cls.construct(**(res))
 
@@ -289,6 +299,19 @@ class DynamojoBase(BaseModel):
             field, cls._config.mutators[field].callable(field, val, cls)
         )
 
+    def _prepare_db_item(self):
+        item = {
+            k: TypeSerializer().serialize(v)
+            for k, v in self._db_item().items()
+        }
+
+        if not self._config.store_aliases:
+            for alias in self._config.__index_aliases__.values():
+                if alias in item:
+                    del item[alias]
+
+        return  item
+
     @classmethod
     def query(
         cls,
@@ -334,8 +357,8 @@ class DynamojoBase(BaseModel):
 
         res = DYNAMOCLIENT.query(**opts)
 
-        res["Items"] = [cls(**cls.deserialize_dynamo(item)) for item in res["Items"]]
-
+        #res["Items"] = [cls(**cls.deserialize_dynamo(item)) for item in res["Items"]]
+        res["Items"] = [cls.construct_from_db(item) for item in res["Items"]]
         return res
 
     def save(
@@ -345,9 +368,10 @@ class DynamojoBase(BaseModel):
         Stores our item in Dynamodb
         """
 
-        item = {k: TypeSerializer().serialize(v) for k, v in self._db_item().items()}
+        item = self._prepare_db_item()
 
         opts = {"TableName": self._config.table, "Item": item, **kwargs}
+
         if ConditionExpression:
             exp = self._get_raw_condition_expression(
                 ConditionExpression, expression_type="ConditionExpression"

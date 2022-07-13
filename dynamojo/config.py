@@ -31,6 +31,10 @@ class DynamojoConfig(BaseModel):
 
     static_attributes: List[str] = []
 
+    # If set to False then attributes that are aliases of indexes will be stripped
+    # out before storing in the db
+    store_aliases: bool = True
+
     underscore_attrs_are_private: bool = True
 
     # Dict of `index key: alias name`

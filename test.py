@@ -86,6 +86,7 @@ class MyFoo(FooBase):
                 "dateTime",
             ]
         },
+        store_aliases=False,
         static_attributes=["dateTime", "accountId"],
         mutators=[],  # Mutator(source="dateTime", callable=mutate_sk)
     )
@@ -104,6 +105,7 @@ foo = MyFoo(
     severity=5,
 )
 print(f"Made object foo: {foo}")
+print(f"Full item: {foo.item()}")
 
 # Fails because of the condition check
 print("\n\nTrying to save with a condition check that will return False")
@@ -119,7 +121,7 @@ foo.save()
 # the second (optional if the table doesn't use a sortkey) argument is the sortkey
 print("\n\nTrying MyFoo.fetch() to get the object we just created.")
 foo = MyFoo.fetch("abcd1234kdhfg", dt)
-print(f"Got it {foo}")
+print(f"Got it {foo.item()}")
 
 # Now lets do a query to get back the same item. We can use a filter expression too
 print(
