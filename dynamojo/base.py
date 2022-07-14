@@ -457,3 +457,4 @@ class QueryResults(UserDict):
 
 
 DynamojoModel = TypeVar("DynamojoModel", bound=DynamojoBase)
+
