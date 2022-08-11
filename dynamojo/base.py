@@ -77,7 +77,7 @@ class DynamojoBase(BaseModel):
         # Static fields can only be set once
         if (
             field in self._config.static_attributes
-            and hasattr(self, DynamojoModel, field)
+            and hasattr(self, field)
             and self.__getattribute__(field) != val
         ):
             raise StaticAttributeError(f"Attribute '{field}' is immutable.")
