@@ -14,7 +14,7 @@ from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 from pydantic import BaseModel, PrivateAttr
 from .boto import DYNAMOCLIENT
 from .index import Index, Lsi
-from .config import DynamojoConfig
+from .config import DynamojoConfig, JoinedAttribute
 from .exceptions import StaticAttributeError, IndexNotFoundError
 
 
@@ -25,6 +25,7 @@ class DynamojoBase(BaseModel):
 
     #: All subclasses should override with their own config of the type `:class:dynamojo.config.DynamojoConfig`
     _config: DynamojoConfig = PrivateAttr()
+
 
     def __new__(cls: DynamojoModel, *_: List[Any], **__: Dict[Any, Any]) -> DynamojoModel:
         if cls is DynamojoBase:
@@ -37,7 +38,7 @@ class DynamojoBase(BaseModel):
         super().__init__(**kwargs)
 
         for attr in self._config.joined_attributes:
-            if attr in self.dict():
+            if attr.attribute in self.dict():
                 raise AttributeError(
                     f"Attribute '{attr}' cannot be declared as a member and a joined field"
                 )
@@ -53,7 +54,7 @@ class DynamojoBase(BaseModel):
                 kwargs[k] = self._mutate_attribute(k, v)
 
     def __getattribute__(self: DynamojoModel, name: str) -> Any:
-        if super().__getattribute__("_config").joined_attributes.get(name):
+        if super().__getattribute__("_config").__joined_attributes__.get(name):
             return self._generate_joined_attribute(name)
 
         return super().__getattribute__(name)
@@ -63,7 +64,7 @@ class DynamojoBase(BaseModel):
         if field in self._config.mutators:
             val = self._mutate_attribute(field, val)
 
-        if field in self._config.joined_attributes:
+        if field in self._config.__joined_attributes__:
             raise AttributeError(
                 f"Attribute '{field}' is a joined field and cannot be set directly"
             )
@@ -98,12 +99,14 @@ class DynamojoBase(BaseModel):
     def _generate_joined_attribute(self: DynamojoModel, name: str) -> str:
         """
         Takes attribute names defined in self._config.joined_attributes and stores them with the values
-        of the corresponding attributes concatenated by self._config.join_separator.
+        of the corresponding attributes concatenated by JoinedAttribute.separator.
         """
         item = super().__getattribute__("dict")()
-        sources = super().__getattribute__("_config").joined_attributes.get(name)
+        joiner = super().__getattribute__("_config").__joined_attributes__[name]
+        sources = joiner.fields
+        separator = joiner.separator
         new_val = [item.get(source, "") for source in sources]
-        return self._config.join_separator.join(new_val)
+        return separator.join(new_val)
 
     @classmethod
     def _get_index_from_attributes(
@@ -251,7 +254,7 @@ class DynamojoBase(BaseModel):
         for attr, val in item.items():
             if not (
                 attr in cls._config.__index_keys__
-                or attr in cls._config.joined_attributes
+                or attr in cls._config.__joined_attributes__
             ):
                 res[attr] = val
 
@@ -344,7 +347,7 @@ class DynamojoBase(BaseModel):
         Returns a dict of attributes created dynamically by self._config.joined_attributes
         """
         return {
-            attr: self.__getattribute__(attr) for attr in self._config.joined_attributes
+            attr: self.__getattribute__(attr) for attr in self._config.__joined_attributes__
         }
 
     @classmethod

@@ -1,4 +1,4 @@
-from .base import DynamojoBase
+from .base import DynamojoBase, JoinedAttribute
 from .config import DynamojoConfig
 from .index import (
     get_indexes,

@@ -5,13 +5,19 @@ from pydantic import BaseModel, PrivateAttr
 
 from .index import IndexList, IndexMap, Mutator
 
+class JoinedAttribute(BaseModel):
+    attribute: str
+    fields: List[str]
+    separator: str = "~"
+
 
 class DynamojoConfig(BaseModel):
     # A dictionary in the form of {"<target attribute>": ["source_att_one", "source_att_two"]} where <target_attribute> will
     # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
     # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
     # attributes.
-    joined_attributes: Dict[str, Union[List[str], Callable]] = {}
+    joined_attributes: List[JoinedAttribute]
+    __joined_attributes__: Dict = {}
 
     # A list of database `Index` objects from `dynamojo.indexes.get_indexes()``
     indexes: IndexList
@@ -24,13 +30,7 @@ class DynamojoConfig(BaseModel):
     # A Dynamodb table name
     table: str
 
-    join_separator: str = "~"
-
     mutators: List[Mutator] = []
-
-    joined_attributes: Dict[str, List[str]] = {}
-
-    static_attributes: List[str] = []
 
     # If set to False then attributes that are aliases of indexes will be stripped
     # out before storing in the db
@@ -50,6 +50,9 @@ class DynamojoConfig(BaseModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+        for attr in self.joined_attributes:
+            self.__joined_attributes__[attr.attribute] = attr
 
         for index_map in self.index_maps:
             if sk_att := index_map.sortkey:
