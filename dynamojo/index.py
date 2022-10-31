@@ -33,7 +33,7 @@ class Index:
         self.__partitionkey = partitionkey if partitionkey else None
         self.__sortkey = sortkey if sortkey else None
         self.__name = name
-        self.is_composit = partitionkey and sortkey
+        self.is_composite = partitionkey and sortkey
 
     @property
     def partitionkey(self) -> str:

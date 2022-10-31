@@ -6,7 +6,7 @@ import requests
 
 from dynamojo.index import IndexMap, get_indexes
 from dynamojo.base import DynamojoBase
-from dynamojo.config import DynamojoConfig
+from dynamojo.config import DynamojoConfig, JoinedAttribute
 from boto3.dynamodb.conditions import Key, Attr
 
 
@@ -78,13 +78,15 @@ class MyFoo(FooBase):
             IndexMap(index=indexes.lsi0, sortkey="dateTime"),
         ],
         table=TABLE,
-        joined_attributes={
-            "dateTypeAndNameSearch": [
+        joined_attributes=[
+            JoinedAttribute(
+                attribute="dateTypeAndNameSearch",
+                fields=[
                 "notificationType",
                 "notificationName",
                 "dateTime",
-            ]
-        },
+            ])
+        ],
         store_aliases=False,
         static_attributes=["dateTime", "accountId"],
         mutators=[],  # Mutator(source="dateTime", callable=mutate_sk)
@@ -103,9 +105,10 @@ foo = MyFoo(
     second_child_field="second child",
     severity=5,
 )
-print(f"Made object foo: {foo}")
-print(f"Full item: {foo.item()}")
+foo.severity = {"bar": "baz"}
+print(foo._diff)
 
+exit()
 # Fails because of the condition check
 print("\n\nTrying to save with a condition check that will return False")
 try:

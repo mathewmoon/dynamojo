@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from collections import UserDict
+from copy import deepcopy
 from dataclasses import dataclass
 from logging import getLogger
 from typing import Any, Dict, List, TypeVar, Union
@@ -12,10 +13,12 @@ from boto3.dynamodb.conditions import (
 )
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 from pydantic import BaseModel, PrivateAttr
+
 from .boto import DYNAMOCLIENT
 from .index import Index, Lsi
-from .config import DynamojoConfig, JoinedAttribute
+from .config import DynamojoConfig
 from .exceptions import StaticAttributeError, IndexNotFoundError
+from .utils import Delta
 
 
 class DynamojoBase(BaseModel):
@@ -25,7 +28,12 @@ class DynamojoBase(BaseModel):
 
     #: All subclasses should override with their own config of the type `:class:dynamojo.config.DynamojoConfig`
     _config: DynamojoConfig = PrivateAttr()
-
+    #: `Delta` that will contain `self.item()`
+    _delta: Delta = PrivateAttr()
+    #: `Delta` that will contain `self.db_item()`
+    _deepdelta: Delta = PrivateAttr()
+    #: Original object
+    _original: DynamojoBase = PrivateAttr()
 
     def __new__(cls: DynamojoModel, *_: List[Any], **__: Dict[Any, Any]) -> DynamojoModel:
         if cls is DynamojoBase:
@@ -53,11 +61,25 @@ class DynamojoBase(BaseModel):
             if k in self._config.mutators:
                 kwargs[k] = self._mutate_attribute(k, v)
 
+        self._original = deepcopy(self)
+
+    @property
+    def _deepdiff(self):
+        return Delta(new=self, old=self._original, deep=True).delta
+
+    @property
+    def _diff(self):
+        return Delta(new=self, old=self._original).delta
+
     def __getattribute__(self: DynamojoModel, name: str) -> Any:
         if super().__getattribute__("_config").__joined_attributes__.get(name):
             return self._generate_joined_attribute(name)
 
         return super().__getattribute__(name)
+
+    @property
+    def _has_changed(self):
+        return self._deepdelta.hasChanged
 
     def __setattr__(self: DynamojoModel, field: str, val: Any) -> None:
         # Mutations should happen first to allow for other dynamic fields to get their updated value
@@ -274,7 +296,7 @@ class DynamojoBase(BaseModel):
             ]
         }
 
-        if self._config.indexes.table.is_composit:
+        if self._config.indexes.table.is_composite:
             key[self._config.indexes.table.sortkey] = self.__index_values__[
                 self._config.indexes.table.sortkey
             ]
@@ -436,6 +458,9 @@ class DynamojoBase(BaseModel):
         Stores our item in Dynamodb
         """
 
+        if not self._has_changed:
+            return self
+
         item = self._prepare_db_item()
 
         opts = {"TableName": self._config.table, "Item": item, **kwargs}
@@ -448,6 +473,54 @@ class DynamojoBase(BaseModel):
 
         return DYNAMOCLIENT.put_item(**opts)
 
+    def update(self, **opts):
+        diff = self._deepdiff
+
+        if not diff.hasChanged():
+            return None
+
+        pk_name = self._config.indexes.table.partitionkey
+        sk_name = self._config.indexes.table.sortkey
+        if (
+            pk_name in diff.keys
+            or sk_name in diff.keys
+        ):
+            raise AttributeError("Cannot update table key attributes. Use `self.save()` instead.")
+
+        attribute_names = {}
+        attribute_values = {}
+        set_statement_items = []
+        del_statement_items = []
+        set_items = {**diff.added, **diff.changed}
+        key = {
+            pk_name: TypeSerializer.serialize(self._db_item()[pk_name])
+        }
+        if sk_name is not None:
+            key[sk_name] = TypeSerializer.serialize(self._db_item(sk_name))
+
+        for attr, val in self._db_item().items():
+            if attr in diff.keys:
+                attribute_names[f"#{attr}"] = attr
+                attribute_values[f":{attr}"] = val
+                if attr in set_items.keys():
+                    statement = f"#{attr} = :{val}"
+                    set_statement_items.append(statement)
+                else:
+                    del_statement_items.append(statement)
+
+        set_statement = f"SET {', '.join(set_statement_items)}"
+        del_statement = f"REMOVE {', '.join(del_statement_items)}"
+
+        opts["Key"] = key
+        opts["ExpressionAttributeNames"] = attribute_names
+        opts["ExpressionAttributeValues"] = {
+            k: TypeSerializer.serialize(v)
+            for k, v in attribute_values.items()
+        }
+
+        opts["UpdateExpression"] = f"{set_statement} {del_statement}"
+        DYNAMOCLIENT.update_item(**opts)
+        return self
 
 @dataclass
 class QueryResults(UserDict):
