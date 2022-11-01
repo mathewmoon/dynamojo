@@ -98,7 +98,7 @@ dt = datetime.now().isoformat()
 # Making a foo
 foo = MyFoo(
     accountId="abcd1234kdhfg",
-    dateTime=dt,
+    dateTime="100000",
     notificationName="TestName",
     notificationType="ALARM",
     child_field="child",
@@ -108,29 +108,27 @@ foo = MyFoo(
 # Fails because of the condition check
 print("\n\nTrying to save with a condition check that will return False")
 try:
-    foo.save(ConditionExpression=Attr("foo").eq("bar"))
+    foo.save()
 except Exception as e:
     print(e)
-
-# But succeeds without it
-foo.save()
-# Trying an update
+## But succeeds without it
+#foo.save()
+## Trying an update
 print("\n\nRunning Update")
 foo.severity = 4
 foo.update()
-print(foo)
 
 # Let's do a get_item() operation. The first arg is always the partition key
 # the second (optional if the table doesn't use a sortkey) argument is the sortkey
 print("\n\nTrying MyFoo.fetch() to get the object we just created.")
-foo = MyFoo.fetch("abcd1234kdhfg", dt)
+foo = MyFoo.fetch("abcd1234kdhfg", "100000")
 print(f"Got it {foo.item()}")
 
 # Now lets do a query to get back the same item. We can use a filter expression too
 print(
     "\n\nRunning a query that will return the same item using MyFoo.query() with a condition and filter expression"
 )
-condition = Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq(dt)
+condition = Key("accountId").eq("abcd1234kdhfg") & Key("dateTime").eq("100000")
 filter = Attr("notificationName").eq("TestName")
 
 # Notice that we don't have to specify the index. Dynamojo will figure out what index to use.

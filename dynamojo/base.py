@@ -10,6 +10,8 @@ from boto3.dynamodb.conditions import (
     AttributeBase,
     ConditionBase,
     ConditionExpressionBuilder,
+    Attr,
+    Key
 )
 from pydantic import BaseModel, PrivateAttr
 
@@ -257,7 +259,6 @@ class DynamojoBase(BaseModel):
             opts[expression_type] = opts[expression_type].replace(key, new_key)
 
         opts["TableName"] = self._config.table
-
         return opts
 
     @classmethod
@@ -447,14 +448,15 @@ class DynamojoBase(BaseModel):
         return QueryResults(**res)
 
     def save(
-        self, ConditionExpression: ConditionBase = None, **kwargs: Dict[str, Any]
+        self, ConditionExpression: ConditionBase = None, fail_on_exists: bool = True, **kwargs: Dict[str, Any]
     ) -> None:
         """
         Stores our item in Dynamodb
         """
 
-        if not self._has_changed:
-            return self
+        table_pk = self._config.indexes.table.partitionkey
+        table_sk = self._config.indexes.table.sortkey
+
 
         item = self._prepare_db_item()
 
@@ -465,6 +467,15 @@ class DynamojoBase(BaseModel):
                 ConditionExpression, expression_type="ConditionExpression"
             )
             opts.update(exp)
+
+        if fail_on_exists:
+            sk_expression = f"attribute_not_exists({table_sk})"
+            pk_expression = f"attribute_not_exists({table_pk})"
+            fail_expression = f"({pk_expression} AND {sk_expression}) " if table_sk is not None else pk_expression
+            if ConditionExpression:
+                opts["ConditionExpression"] = f"{fail_expression} AND {opts['ConditionExpression']}"
+            else:
+                opts["ConditionExpression"] = fail_expression
 
         return DYNAMOCLIENT.put_item(**opts)
 
@@ -515,7 +526,6 @@ class DynamojoBase(BaseModel):
         }
 
         opts["UpdateExpression"] = f"{set_statement} {del_statement}"
-        print(opts)
         DYNAMOCLIENT.update_item(**opts)
         return self
 
