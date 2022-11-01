@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from setuptools import setup
 
-description = "WIP"
+description = "Object Modeling for Dynamodb"
+
 with open("README.md", "r") as f:
     long_description = f.read()
 
