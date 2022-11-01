@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from copy import deepcopy
 from pydantic import BaseModel, PrivateAttr
 from typing import (
   TYPE_CHECKING,
@@ -8,12 +7,17 @@ from typing import (
   NamedTuple
 )
 
-from collections import UserDict
 
 if TYPE_CHECKING:
   from .base import DynamojoBase
 else:
   DynamojoBase = object
+
+from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+
+
+TYPE_SERIALIZER = TypeSerializer()
+TYPE_DESERIALIZER = TypeDeserializer()
 
 Change = NamedTuple("Change", [("old", Any), ("new", Any)])
 Diff = NamedTuple("Diff", (("added", Dict[str, Any]), ("removed", Dict[str, Any]), ("changed", Dict[str, Any])))

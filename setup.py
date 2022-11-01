@@ -7,10 +7,10 @@ with open("README.md", "r") as f:
 
 setup(
     name="Dynamojo",
-    version="0.0.3",
+    version="0.1.0",
     description=description,
     long_description=long_description,
-    install_requires=["requests"],
+    install_requires=["pydantic", "boto3"],
     long_description_content_type="text/markdown",
     author="Mathew Moon",
     author_email="me@mathewmoon.net",

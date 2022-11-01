@@ -105,10 +105,6 @@ foo = MyFoo(
     second_child_field="second child",
     severity=5,
 )
-foo.severity = {"bar": "baz"}
-print(foo._diff)
-
-exit()
 # Fails because of the condition check
 print("\n\nTrying to save with a condition check that will return False")
 try:
@@ -118,6 +114,11 @@ except Exception as e:
 
 # But succeeds without it
 foo.save()
+# Trying an update
+print("\n\nRunning Update")
+foo.severity = 4
+foo.update()
+print(foo)
 
 # Let's do a get_item() operation. The first arg is always the partition key
 # the second (optional if the table doesn't use a sortkey) argument is the sortkey

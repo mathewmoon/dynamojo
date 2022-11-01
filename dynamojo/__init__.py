@@ -1,5 +1,5 @@
-from .base import DynamojoBase, JoinedAttribute
-from .config import DynamojoConfig
+from .base import DynamojoBase
+from .config import DynamojoConfig, JoinedAttribute
 from .index import (
     get_indexes,
     Gsi,
