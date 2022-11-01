@@ -10,3 +10,20 @@ from .index import (
     Mutator,
     TableIndex,
 )
+from .utils import Delta
+
+
+__all__ = [
+    "Delta",
+    "DynamojoBase",
+    "DynamojoConfig",
+    "get_indexes",
+    "Gsi",
+    "Index",
+    "IndexList",
+    "IndexMap",
+    "JoinedAttribute",
+    "Lsi",
+    "Mutator",
+    "TableIndex"
+]
