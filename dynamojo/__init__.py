@@ -1,5 +1,5 @@
-from .base import DynamojoBase, JoinedAttribute
-from .config import DynamojoConfig
+from .base import DynamojoBase
+from .config import DynamojoConfig, JoinedAttribute
 from .index import (
     get_indexes,
     Gsi,
@@ -10,3 +10,21 @@ from .index import (
     Mutator,
     TableIndex,
 )
+from .utils import Delta
+
+
+__all__ = [
+    "Delta",
+    "DynamojoBase",
+    "DynamojoConfig",
+    "get_indexes",
+    "Gsi",
+    "Index",
+    "IndexList",
+    "IndexMap",
+    "JoinedAttribute",
+    "Lsi",
+    "Mutator",
+    "TableIndex"
+]
+
