@@ -15,6 +15,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Mathew Moon",
     author_email="me@mathewmoon.net",
+    url="https://github.com/mathewmoon/dynamojo",
     python_requires=">=3.8",
     packages=["dynamojo"],
 )
