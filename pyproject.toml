@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Dynamojo"
-version = "1.0.0"
+version = "1.0.1"
 description = "ORM For dynamodb"
 authors = ["Mathew Moon <me@mathewmoon.net>"]
 homepage = "https://github.com/mathewmoon/dynamojo"
