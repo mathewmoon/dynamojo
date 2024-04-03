@@ -3,7 +3,7 @@
 ---
 ###  :exclamation: Important Notice :exclamation:
 Version 1.0.0 is an important update that introduces breaking changes:
-  * Pydantic dependency is not at 2.x
+  * Pydantic dependency is now at 2.x
     * `DynamojoBase._config` attribute is now `DynamojoBase.__config__`
   * The following methods are now async:
     * `DynamojoBase.delete`

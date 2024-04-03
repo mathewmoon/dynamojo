@@ -11,7 +11,7 @@ from boto3.dynamodb.conditions import (
     ConditionBase,
     ConditionExpressionBuilder,
 )
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel
 
 from .boto import DYNAMOCLIENT
 from .index import Index, Lsi
