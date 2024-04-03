@@ -287,17 +287,18 @@ class DynamojoBase(BaseModel):
         Deletes an item from the table
         """
         key = {
-            self._config.indexes.table.partitionkey: self.__index_values__[
-                self._config.indexes.table.partitionkey
-            ]
+            self._config.indexes.table.partitionkey: self.index_attributes()[self._config.indexes.table.partitionkey]
         }
 
         if self._config.indexes.table.is_composite:
-            key[self._config.indexes.table.sortkey] = self.__index_values__[
-                self._config.indexes.table.sortkey
-            ]
+            key[self._config.indexes.table.sortkey] = self.index_attributes()[self._config.indexes.table.sortkey]
 
-        res = self._config.table.delete_item(Key=key)
+        serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
+
+        res = DYNAMOCLIENT.delete_item(
+            Key=serialized_key,
+            TableName=self._config.table
+        )
 
         return res
 
