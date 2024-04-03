@@ -1,8 +1,17 @@
 # Dynamojo
 
-###  Important Notice
-Version 1.0.0 is an important update that introduces breaking changes by implementing Pydantic 2.x. Make sure to pin your installations to the appropriate version
-
+---
+###  :exclamation: Important Notice :exclamation:
+Version 1.0.0 is an important update that introduces breaking changes:
+  * Pydantic dependency is not at 2.x
+    * `DynamojoBase._config` attribute is now `DynamojoBase.__config__`
+  * The following methods are now async:
+    * `DynamojoBase.delete`
+    * `DynamojoBase.fetch`
+    * `DynamojoBase.query`
+    * `DynamojoBase.save`
+    * `DynamojoBase.update`
+---
 
 ## Because one table is better than more
 
