@@ -15,6 +15,7 @@ indexes = get_indexes("test-dynamojo")
 DD_API_KEY = environ.get("DD_API_KEY")
 DD_APP_KEY = environ.get("DD_APP_KEY")
 
+
 class FooBase(DynamojoBase):
     accountId: str
     dateTime: str
@@ -68,7 +69,7 @@ class MyFoo(FooBase):
     child_field: str
     second_child_field: str
 
-    _config = DynamojoConfig(
+    __config__ = DynamojoConfig(
         indexes=indexes,
         index_maps=[
             IndexMap(index=indexes.table, sortkey="dateTime", partitionkey="accountId"),
@@ -82,10 +83,11 @@ class MyFoo(FooBase):
             JoinedAttribute(
                 attribute="dateTypeAndNameSearch",
                 fields=[
-                "notificationType",
-                "notificationName",
-                "dateTime",
-            ])
+                    "notificationType",
+                    "notificationName",
+                    "dateTime",
+                ],
+            )
         ],
         store_aliases=False,
         static_attributes=["dateTime", "accountId"],
@@ -112,7 +114,7 @@ try:
 except Exception as e:
     print(e)
 ## But succeeds without it
-#foo.save()
+# foo.save()
 ## Trying an update
 print("\n\nRunning Update")
 foo.severity = 4

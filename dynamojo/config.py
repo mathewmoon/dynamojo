@@ -5,6 +5,7 @@ from pydantic import BaseModel, PrivateAttr
 
 from .index import IndexList, IndexMap, Mutator
 
+
 class JoinedAttribute(BaseModel):
     attribute: str
     fields: List[str]
@@ -36,15 +37,12 @@ class DynamojoConfig(BaseModel):
     # out before storing in the db
     store_aliases: bool = True
 
-    underscore_attrs_are_private: bool = True
-
     # Dict of `index key: alias name`
-    __index_aliases__: dict = PrivateAttr(default={})
+    _index_aliases: dict = PrivateAttr(default={})
 
-    __index_keys__: List[str] = PrivateAttr(default={})
+    _index_keys: List[str] = PrivateAttr(default={})
 
     class Config:
-        underscore_attrs_are_private: bool = True
         arbitrary_types_allowed = True
         extra = "allow"
 
@@ -56,10 +54,10 @@ class DynamojoConfig(BaseModel):
 
         for index_map in self.index_maps:
             if sk_att := index_map.sortkey:
-                self.__index_aliases__[index_map.index.sortkey] = sk_att
+                self._index_aliases[index_map.index.sortkey] = sk_att
             if getattr(index_map, "partitionkey", None):
-                self.__index_aliases__[
+                self._index_aliases[
                     index_map.index.partitionkey
                 ] = index_map.partitionkey
 
-        self.__index_keys__ = list(set(self.__index_aliases__.keys()))
+        self._index_keys = list(set(self._index_aliases.keys()))

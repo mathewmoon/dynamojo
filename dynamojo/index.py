@@ -29,7 +29,6 @@ class Index:
         sortkey: str,
         partitionkey: str = None,
     ) -> None:
-
         self.__partitionkey = partitionkey if partitionkey else None
         self.__sortkey = sortkey if sortkey else None
         self.__name = name
@@ -88,7 +87,6 @@ class IndexList(UserDict):
 
 
 def get_indexes(table_name: str) -> IndexList:
-
     desc = DYNAMOCLIENT.describe_table(TableName=table_name)["Table"]
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])

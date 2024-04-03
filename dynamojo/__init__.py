@@ -25,6 +25,5 @@ __all__ = [
     "JoinedAttribute",
     "Lsi",
     "Mutator",
-    "TableIndex"
+    "TableIndex",
 ]
-

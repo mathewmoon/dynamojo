@@ -1,4 +1,9 @@
 # Dynamojo
+
+###  Important Notice
+Version 1.0.0 is an important update that introduces breaking changes by implementing Pydantic 2.x. Make sure to pin your installations to the appropriate version
+
+
 ## Because one table is better than more
 
 Dynamojo takes the concept of Dynamodb Single Table design and creates a modeling framework for it. This library is opinionated in the following ways:
