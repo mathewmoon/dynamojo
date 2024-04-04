@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
+from abc import ABC, abstractclassmethod
 from collections import UserDict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -20,16 +22,18 @@ from .exceptions import StaticAttributeError, IndexNotFoundError
 from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
 
 
-class DynamojoBase(BaseModel):
+class DynamojoBase(BaseModel, ABC):
     """A class to use as a base for modeling objects to store in Dynamodb. This class
     is intended to be inherited by another class, which actually defines the model.
     """
 
-    #: All subclasses should override with their own config of the type `:class:dynamojo.config.DynamojoConfig`
-    __config__: DynamojoConfig
+    #: All subclasses should override with their own method that returns config of the type `:class:dynamojo.config.DynamojoConfig`
+    @abstractclassmethod
+    def _config(cls) -> DynamojoConfig:
+        pass
 
     #: Original object
-    __original__: DynamojoBase
+    _original: DynamojoBase
 
     def __new__(
         cls: DynamojoModel, *_: List[Any], **__: Dict[Any, Any]
@@ -42,12 +46,12 @@ class DynamojoBase(BaseModel):
         """Initialize a new object with any required or optional attributes"""
         super().__init__(**kwargs)
 
-        for attr in self.__config__.joined_attributes:
+        for attr in self._config().joined_attributes:
             if attr.attribute in self.model_dump():
                 raise AttributeError(
                     f"Attribute '{attr}' cannot be declared as a member and a joined field"
                 )
-        for attr in self.__config__._index_keys:
+        for attr in self._config()._index_keys:
             if attr in self.model_dump():
                 raise AttributeError(
                     f"Attribute {attr} is part of an index and cannot be declared directly. Use IndexMap() and an alias instead"
@@ -55,21 +59,21 @@ class DynamojoBase(BaseModel):
 
         # TODO: Flush out these mutators.
         for k, v in kwargs.items():
-            if k in self.__config__.mutators:
+            if k in self._config().mutators:
                 kwargs[k] = self._mutate_attribute(k, v)
 
-        self.__original__ = deepcopy(self)
+        self._original = deepcopy(self)
 
     @property
     def _deepdiff(self):
-        return Delta(new=self, old=self.__original__, deep=True)
+        return Delta(new=self, old=self._original, deep=True)
 
     @property
     def _diff(self):
-        return Delta(new=self, old=self.__original__)
+        return Delta(new=self, old=self._original)
 
     def __getattribute__(self: DynamojoModel, name: str) -> Any:
-        if super().__getattribute__("__config__").__joined_attributes__.get(name):
+        if super().__getattribute__("_config")().__joined_attributes__.get(name):
             return self._generate_joined_attribute(name)
 
         return super().__getattribute__(name)
@@ -80,22 +84,22 @@ class DynamojoBase(BaseModel):
 
     def __setattr__(self: DynamojoModel, field: str, val: Any) -> None:
         # Mutations should happen first to allow for other dynamic fields to get their updated value
-        if field in self.__config__.mutators:
+        if field in self._config().mutators:
             val = self._mutate_attribute(field, val)
 
-        if field in self.__config__.__joined_attributes__:
+        if field in self._config().__joined_attributes__:
             raise AttributeError(
                 f"Attribute '{field}' is a joined field and cannot be set directly"
             )
 
-        if field in self.__config__._index_keys:
+        if field in self._config()._index_keys:
             raise AttributeError(
                 f"Attribute '{field}' is an index key and cannot be set directly. Use IndexMap() to create an alias"
             )
 
         # Static fields can only be set once
         if (
-            field in self.__config__.static_attributes
+            field in self._config().static_attributes
             and hasattr(self, field)
             and self.__getattribute__(field) != val
         ):
@@ -105,7 +109,7 @@ class DynamojoBase(BaseModel):
 
     def _db_item(self) -> Dict[str, Any]:
         """
-        Returns the item exactly as it is in the database. If self.__config__.store_aliases is False
+        Returns the item exactly as it is in the database. If self._config().store_aliases is False
         then those aliases will be omitted.
         """
         item = {
@@ -113,19 +117,19 @@ class DynamojoBase(BaseModel):
             **self.joined_attributes(),
             **self.index_attributes(),
         }
-        if not self.__config__.store_aliases:
-            for attr in self.__config__._index_aliases.values():
+        if not self._config().store_aliases:
+            for attr in self._config()._index_aliases.values():
                 if attr in item:
                     del item[attr]
         return item
 
     def _generate_joined_attribute(self: DynamojoModel, name: str) -> str:
         """
-        Takes attribute names defined in self.__config__.joined_attributes and stores them with the values
+        Takes attribute names defined in self._config().joined_attributes and stores them with the values
         of the corresponding attributes concatenated by JoinedAttribute.separator.
         """
         item = super().__getattribute__("dict")()
-        joiner = super().__getattribute__("__config__").__joined_attributes__[name]
+        joiner = super().__getattribute__("_config")().__joined_attributes__[name]
         sources = joiner.fields
         separator = joiner.separator
         new_val = [item.get(source, "") for source in sources]
@@ -140,13 +144,13 @@ class DynamojoBase(BaseModel):
         If multiple indexes match then the table index, if matched is returned first. If
         not the table index then the first match in the list.
         """
-        for x in cls.__config__.index_maps:
+        for x in cls._config().index_maps:
             if x.index.name == "table":
                 table_index_map = x
                 break
         matches = {}
 
-        for mapping in cls.__config__.index_maps:
+        for mapping in cls._config().index_maps:
             if isinstance(mapping.index, Lsi):
                 pk = table_index_map.partitionkey
             else:
@@ -261,7 +265,7 @@ class DynamojoBase(BaseModel):
             opts["ExpressionAttributeValues"][new_key] = val
             opts[expression_type] = opts[expression_type].replace(key, new_key)
 
-        opts["TableName"] = self.__config__.table
+        opts["TableName"] = self._config().table
         return opts
 
     @classmethod
@@ -274,13 +278,13 @@ class DynamojoBase(BaseModel):
 
         for attr, val in item.items():
             if not (
-                attr in cls.__config__._index_keys
-                or attr in cls.__config__.__joined_attributes__
+                attr in cls._config()._index_keys
+                or attr in cls._config().__joined_attributes__
             ):
                 res[attr] = val
 
-        if not cls.__config__.store_aliases:
-            for index, alias in cls.__config__._index_aliases.items():
+        if not cls._config().store_aliases:
+            for index, alias in cls._config()._index_aliases.items():
                 res[alias] = item[index]
 
         return cls.construct(**(res))
@@ -290,20 +294,20 @@ class DynamojoBase(BaseModel):
         Deletes an item from the table
         """
         key = {
-            self.__config__.indexes.table.partitionkey: self.index_attributes()[
-                self.__config__.indexes.table.partitionkey
+            self._config().indexes.table.partitionkey: self.index_attributes()[
+                self._config().indexes.table.partitionkey
             ]
         }
 
-        if self.__config__.indexes.table.is_composite:
-            key[self.__config__.indexes.table.sortkey] = self.index_attributes()[
-                self.__config__.indexes.table.sortkey
+        if self._config().indexes.table.is_composite:
+            key[self._config().indexes.table.sortkey] = self.index_attributes()[
+                self._config().indexes.table.sortkey
             ]
 
         serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
 
         res = DYNAMOCLIENT.delete_item(
-            Key=serialized_key, TableName=self.__config__.table
+            Key=serialized_key, TableName=self._config().table
         )
 
         return res
@@ -324,14 +328,14 @@ class DynamojoBase(BaseModel):
         Returns a rehydrated object from the database
         """
 
-        key = {cls.__config__.indexes.table.partitionkey: pk}
+        key = {cls._config().indexes.table.partitionkey: pk}
 
-        if cls.__config__.indexes.table.sortkey:
-            key[cls.__config__.indexes.table.sortkey] = sk
+        if cls._config().indexes.table.sortkey:
+            key[cls._config().indexes.table.sortkey] = sk
 
         serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
 
-        opts = {"Key": serialized_key, "TableName": cls.__config__.table, **kwargs}
+        opts = {"Key": serialized_key, "TableName": cls._config().table, **kwargs}
 
         res = DYNAMOCLIENT.get_item(**opts)
 
@@ -344,7 +348,7 @@ class DynamojoBase(BaseModel):
         Accepts a string as a name and returns an Index() object
         """
         try:
-            return cls.__config__.indexes[name]
+            return cls._config().indexes[name]
         except KeyError:
             raise IndexNotFoundError(f"Index {name} does not exist")
 
@@ -353,7 +357,7 @@ class DynamojoBase(BaseModel):
         Returns a dict containing index attributes as keys along with their set values
         """
         indexes = {}
-        for mapping in self.__config__.index_maps:
+        for mapping in self._config().index_maps:
             if hasattr(mapping, "partitionkey"):
                 indexes[mapping.index.partitionkey] = self.__getattribute__(
                     mapping.partitionkey
@@ -365,27 +369,27 @@ class DynamojoBase(BaseModel):
     def item(self) -> Dict[str, Any]:
         """
         Returns a dict that contains declared attributes and attributes dynamically generated
-        by self.__config__.joined_attributes
+        by self._config().joined_attributes
         """
         return {**self.model_dump(), **self.joined_attributes()}
 
     def joined_attributes(self) -> Dict[str, str]:
         """
-        Returns a dict of attributes created dynamically by self.__config__.joined_attributes
+        Returns a dict of attributes created dynamically by self._config().joined_attributes
         """
         return {
             attr: self.__getattribute__(attr)
-            for attr in self.__config__.__joined_attributes__
+            for attr in self._config().__joined_attributes__
         }
 
     @classmethod
     def _mutate_attribute(cls, field: str, val: Any) -> Any:
         """
-        Returns the mutated value using the callable specified in cls.__config__.mutators for
+        Returns the mutated value using the callable specified in cls._config().mutators for
         an attribute.
         """
         return super().__setattr__(
-            field, cls.__config__.mutators[field].callable(field, val, cls)
+            field, cls._config().mutators[field].callable(field, val, cls)
         )
 
     def _prepare_db_item(self):
@@ -394,8 +398,8 @@ class DynamojoBase(BaseModel):
         """
         item = {k: TYPE_SERIALIZER.serialize(v) for k, v in self._db_item().items()}
 
-        if not self.__config__.store_aliases:
-            for alias in self.__config__._index_aliases.values():
+        if not self._config().store_aliases:
+            for alias in self._config()._index_aliases.values():
                 if alias in item:
                     del item[alias]
 
@@ -466,12 +470,12 @@ class DynamojoBase(BaseModel):
         Stores our item in Dynamodb
         """
 
-        table_pk = self.__config__.indexes.table.partitionkey
-        table_sk = self.__config__.indexes.table.sortkey
+        table_pk = self._config().indexes.table.partitionkey
+        table_sk = self._config().indexes.table.sortkey
 
         item = self._prepare_db_item()
 
-        opts = {"TableName": self.__config__.table, "Item": item, **kwargs}
+        opts = {"TableName": self._config().table, "Item": item, **kwargs}
 
         if ConditionExpression:
             exp = self._get_raw_condition_expression(
@@ -502,8 +506,8 @@ class DynamojoBase(BaseModel):
         if not diff.hasChanged:
             return None
 
-        pk_name = self.__config__.indexes.table.partitionkey
-        sk_name = self.__config__.indexes.table.sortkey
+        pk_name = self._config().indexes.table.partitionkey
+        sk_name = self._config().indexes.table.sortkey
         if pk_name in diff.keys or sk_name in diff.keys:
             raise AttributeError(
                 "Cannot update table key attributes. Use `self.save()` instead."
@@ -535,7 +539,7 @@ class DynamojoBase(BaseModel):
             f"REMOVE {', '.join(del_statement_items)}" if del_statement_items else ""
         )
 
-        opts["TableName"] = self.__config__.table
+        opts["TableName"] = self._config().table
         opts["Key"] = key
         opts["ExpressionAttributeNames"] = attribute_names
         opts["ExpressionAttributeValues"] = {

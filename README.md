@@ -4,7 +4,8 @@
 ###  :exclamation: Important Notice :exclamation:
 Version 1.0.0 is an important update that introduces breaking changes:
   * Pydantic dependency is now at 2.x
-    * `DynamojoBase._config` attribute is now `DynamojoBase.__config__`
+    * `DynamojoBase._config` attribute is now an abstractclassmethod named `DynamojoBase.__config()`
+    * `DynamojoBase._config` must be declared in subclasses of `DynamojoBase` and must return a `DynamojoConfig` object
   * The following methods are now async:
     * `DynamojoBase.delete`
     * `DynamojoBase.fetch`
