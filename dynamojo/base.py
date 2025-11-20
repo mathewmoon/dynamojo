@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from abc import ABC, abstractclassmethod
+from abc import ABC, abstractmethod
 from collections import UserDict
 from copy import deepcopy
 from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, Dict, List, TypeVar, Union
+from typing import Any, TypeVar
 
 from boto3.dynamodb.conditions import (
     AttributeBase,
     ConditionBase,
     ConditionExpressionBuilder,
 )
-from pydantic import BaseModel
+from boto3.dynamodb.types import Binary, Decimal
+from pydantic import BaseModel, PrivateAttr, model_validator, Field
 
 from .boto import DYNAMOCLIENT
 from .index import Index, Lsi
@@ -28,21 +29,20 @@ class DynamojoBase(BaseModel, ABC):
     """
 
     #: All subclasses should override with their own method that returns config of the type `:class:dynamojo.config.DynamojoConfig`
-    @abstractclassmethod
+    @classmethod
+    @abstractmethod
     def _config(cls) -> DynamojoConfig:
         pass
 
     #: Original object
     _original: DynamojoBase
 
-    def __new__(
-        cls: DynamojoModel, *_: List[Any], **__: Dict[Any, Any]
-    ) -> DynamojoModel:
+    def __new__(cls: DynamojoBase, *_: list[Any], **__: dict[Any, Any]) -> DynamojoBase:
         if cls is DynamojoBase:
             raise TypeError(f"{cls} must be subclassed")
         return super().__new__(cls)
 
-    def __init__(self: DynamojoModel, **kwargs: Dict[str, Any]) -> None:
+    def __init__(self: DynamojoBase, **kwargs: dict[str, Any]) -> None:
         """Initialize a new object with any required or optional attributes"""
         super().__init__(**kwargs)
 
@@ -70,9 +70,9 @@ class DynamojoBase(BaseModel, ABC):
 
     @property
     def _diff(self):
-        return Delta(new=self, old=self._original)
+        return Delta(new=self, old=self._original, deep=False)
 
-    def __getattribute__(self: DynamojoModel, name: str) -> Any:
+    def __getattribute__(self: DynamojoBase, name: str) -> Any:
         if super().__getattribute__("_config")().__joined_attributes__.get(name):
             return self._generate_joined_attribute(name)
 
@@ -82,7 +82,7 @@ class DynamojoBase(BaseModel, ABC):
     def _has_changed(self):
         return self._deepdiff.hasChanged
 
-    def __setattr__(self: DynamojoModel, field: str, val: Any) -> None:
+    def __setattr__(self: DynamojoBase, field: str, val: Any) -> None:
         # Mutations should happen first to allow for other dynamic fields to get their updated value
         if field in self._config().mutators:
             val = self._mutate_attribute(field, val)
@@ -107,7 +107,7 @@ class DynamojoBase(BaseModel, ABC):
 
         return super().__setattr__(field, val)
 
-    def _db_item(self) -> Dict[str, Any]:
+    def _db_item(self) -> dict[str, Any]:
         """
         Returns the item exactly as it is in the database. If self._config().store_aliases is False
         then those aliases will be omitted.
@@ -123,7 +123,38 @@ class DynamojoBase(BaseModel, ABC):
                     del item[attr]
         return item
 
-    def _generate_joined_attribute(self: DynamojoModel, name: str) -> str:
+    @classmethod
+    def _convert_dynamo_types(
+        cls: DynamojoBase, db_item: dict[str, Any]
+    ) -> dict[str, Any]:
+        def decimal(obj: Any) -> Any:
+            if isinstance(obj, Decimal):
+                if obj % 1 == 0:
+                    return int(obj)
+                else:
+                    return float(obj)
+            return obj
+
+        def deserialize(item: Any) -> Any:
+            if isinstance(item, dict):
+                return {k: deserialize(v) for k, v in item.items()}
+
+            if isinstance(item, list):
+                return [deserialize(v) for v in item]
+
+            if isinstance(item, Binary):
+                return item.value
+
+            if isinstance(item, Decimal):
+                return decimal(item)
+
+            return item
+
+        for k, v in db_item.items():
+            db_item[k] = deserialize(v)
+        return db_item
+
+    def _generate_joined_attribute(self: DynamojoBase, name: str) -> str:
         """
         Takes attribute names defined in self._config().joined_attributes and stores them with the values
         of the corresponding attributes concatenated by JoinedAttribute.separator.
@@ -187,7 +218,7 @@ class DynamojoBase(BaseModel, ABC):
     def _get_raw_condition_expression(
         self,
         exp: ConditionBase,
-        index: Union[Index, str] = None,
+        index: Index | str = None,
         expression_type="KeyConditionExpression",
     ):
         """
@@ -215,9 +246,9 @@ class DynamojoBase(BaseModel, ABC):
 
             for placeholder, attr in raw_exp.attribute_name_placeholders.items():
                 if attr == attribute_names[0]:
-                    raw_exp.attribute_name_placeholders[
-                        placeholder
-                    ] = index.partitionkey
+                    raw_exp.attribute_name_placeholders[placeholder] = (
+                        index.partitionkey
+                    )
                 if len(attribute_names) == 2 and attr == attribute_names[1]:
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
 
@@ -269,11 +300,14 @@ class DynamojoBase(BaseModel, ABC):
         return opts
 
     @classmethod
-    def _construct_from_db(cls, item: Dict) -> DynamojoModel:
+    def _construct_from_db(cls, item: dict) -> DynamojoBase:
         """
         Rehydrates an object from an item out of the DB.
         """
         item = cls._deserialize_dynamo(item)
+        if cls._config().convert_dynamodb_types:
+            item = cls._convert_dynamo_types(item)
+
         res = {}
 
         for attr, val in item.items():
@@ -287,7 +321,11 @@ class DynamojoBase(BaseModel, ABC):
             for index, alias in cls._config()._index_aliases.items():
                 res[alias] = item[index]
 
-        return cls.construct(**(res))
+        res = cls.model_construct(**(res))
+        # IMPORTANT: All privateattrs have to be set AFTER model_construct() because
+        # model_construct() does not call __init__()
+        res._original = deepcopy(res)
+        return res
 
     async def delete(self) -> None:
         """
@@ -313,7 +351,7 @@ class DynamojoBase(BaseModel, ABC):
         return res
 
     @staticmethod
-    def _deserialize_dynamo(data: Dict[str, Any]) -> Dict[str, Any]:
+    def _deserialize_dynamo(data: dict[str, Any]) -> dict[str, Any]:
         """
         Deserializes the results from a low-level boto3 Dynamodb client query/get_item
         into a standard dictionary.
@@ -322,8 +360,8 @@ class DynamojoBase(BaseModel, ABC):
 
     @classmethod
     async def fetch(
-        cls, pk: str, sk: str = None, **kwargs: Dict[str, Any]
-    ) -> DynamojoModel:
+        cls, pk: str, sk: str = None, **kwargs: dict[str, Any]
+    ) -> DynamojoBase:
         """
         Returns a rehydrated object from the database
         """
@@ -352,7 +390,7 @@ class DynamojoBase(BaseModel, ABC):
         except KeyError:
             raise IndexNotFoundError(f"Index {name} does not exist")
 
-    def index_attributes(self) -> Dict[str, Any]:
+    def index_attributes(self) -> dict[str, Any]:
         """
         Returns a dict containing index attributes as keys along with their set values
         """
@@ -366,14 +404,14 @@ class DynamojoBase(BaseModel, ABC):
                 indexes[mapping.index.sortkey] = self.__getattribute__(mapping.sortkey)
         return indexes
 
-    def item(self) -> Dict[str, Any]:
+    def item(self) -> dict[str, Any]:
         """
         Returns a dict that contains declared attributes and attributes dynamically generated
         by self._config().joined_attributes
         """
         return {**self.model_dump(), **self.joined_attributes()}
 
-    def joined_attributes(self) -> Dict[str, str]:
+    def joined_attributes(self) -> dict[str, str]:
         """
         Returns a dict of attributes created dynamically by self._config().joined_attributes
         """
@@ -409,12 +447,12 @@ class DynamojoBase(BaseModel, ABC):
     async def query(
         cls,
         KeyConditionExpression: ConditionBase,
-        Index: Union[Index, str] = None,
+        Index: Index | str = None,
         FilterExpression: AttributeBase = None,
         Limit: int = 1000,
         ExclusiveStartKey: dict = None,
         result_type: str = "standard",
-        **kwargs: Dict[str, Any],
+        **kwargs: dict[str, Any],
     ) -> QueryResults:
         """
         Runs a Dynamodb query using a condition from db.Index. The kwargs argument can be any
@@ -464,7 +502,7 @@ class DynamojoBase(BaseModel, ABC):
         self,
         ConditionExpression: ConditionBase = None,
         fail_on_exists: bool = True,
-        **kwargs: Dict[str, Any],
+        **kwargs: dict[str, Any],
     ) -> None:
         """
         Stores our item in Dynamodb
@@ -492,20 +530,18 @@ class DynamojoBase(BaseModel, ABC):
                 else pk_expression
             )
             if ConditionExpression:
-                opts[
-                    "ConditionExpression"
-                ] = f"{fail_expression} AND {opts['ConditionExpression']}"
+                opts["ConditionExpression"] = (
+                    f"{fail_expression} AND {opts['ConditionExpression']}"
+                )
             else:
                 opts["ConditionExpression"] = fail_expression
 
         return DYNAMOCLIENT.put_item(**opts)
 
     async def update(self, **opts):
-        diff = self._deepdiff
-
-        if not diff.hasChanged:
+        diff = self._diff
+        if not self._diff.hasChanged:
             return None
-
         pk_name = self._config().indexes.table.partitionkey
         sk_name = self._config().indexes.table.sortkey
         if pk_name in diff.keys or sk_name in diff.keys:
@@ -553,12 +589,9 @@ class DynamojoBase(BaseModel, ABC):
 
 @dataclass
 class QueryResults(UserDict):
-    Items: List[DynamojoModel]
+    Items: list[DynamojoBase]
     Count: int
-    ResponseMetadata: Dict[str, Any]
+    ResponseMetadata: dict[str, Any]
     ScannedCount: int
-    LastEvaluatedKey: Dict[str, Dict[str, Any]] = None
-    ConsumedCapacity: Dict[str, Any] = None
-
-
-DynamojoModel = TypeVar("DynamojoModel", bound=DynamojoBase)
+    LastEvaluatedKey: dict[str, dict[str, Any]] = None
+    ConsumedCapacity: dict[str, Any] = None

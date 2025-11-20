@@ -17,6 +17,7 @@ class DynamojoConfig(BaseModel):
     # automatically be overwritten by the attributes of it's corresponding list being joined with '~'. This is useful for creating
     # keys that can be queried over using Key().begins_with() or Key().between() by creating a means to filter based on the compounded
     # attributes.
+    convert_dynamodb_types: bool = True
     joined_attributes: List[JoinedAttribute]
     __joined_attributes__: Dict = {}
 
@@ -56,8 +57,8 @@ class DynamojoConfig(BaseModel):
             if sk_att := index_map.sortkey:
                 self._index_aliases[index_map.index.sortkey] = sk_att
             if getattr(index_map, "partitionkey", None):
-                self._index_aliases[
-                    index_map.index.partitionkey
-                ] = index_map.partitionkey
+                self._index_aliases[index_map.index.partitionkey] = (
+                    index_map.partitionkey
+                )
 
         self._index_keys = list(set(self._index_aliases.keys()))
