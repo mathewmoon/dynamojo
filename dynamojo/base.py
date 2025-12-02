@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import UserDict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from logging import getLogger
 from typing import Any, TypeVar
 
@@ -14,7 +14,7 @@ from boto3.dynamodb.conditions import (
     ConditionExpressionBuilder,
 )
 from boto3.dynamodb.types import Binary, Decimal
-from pydantic import BaseModel, PrivateAttr, model_validator, Field
+from pydantic import BaseModel, PrivateAttr, model_validator, Field, field_validator
 
 from .boto import DYNAMOCLIENT
 from .index import Index, Lsi
@@ -300,6 +300,11 @@ class DynamojoBase(BaseModel, ABC):
         return opts
 
     @classmethod
+    async def execute_write_transaction(cls, expressions: list[dict], **opts) -> dict:
+        res = DYNAMOCLIENT.transact_write_items(TransactItems=expressions, **opts)
+        return res
+
+    @classmethod
     def _construct_from_db(cls, item: dict) -> DynamojoBase:
         """
         Rehydrates an object from an item out of the DB.
@@ -498,16 +503,12 @@ class DynamojoBase(BaseModel, ABC):
         res["Items"] = [cls._construct_from_db(item) for item in res["Items"]]
         return QueryResults(**res)
 
-    async def save(
+    def make_put_item_opts(
         self,
         ConditionExpression: ConditionBase = None,
         fail_on_exists: bool = True,
-        **kwargs: dict[str, Any],
-    ) -> None:
-        """
-        Stores our item in Dynamodb
-        """
-
+        **kwargs,
+    ):
         table_pk = self._config().indexes.table.partitionkey
         table_sk = self._config().indexes.table.sortkey
 
@@ -536,19 +537,26 @@ class DynamojoBase(BaseModel, ABC):
             else:
                 opts["ConditionExpression"] = fail_expression
 
+        return opts
+
+    async def save(
+        self,
+        ConditionExpression: ConditionBase = None,
+        fail_on_exists: bool = True,
+        **kwargs: dict[str, Any],
+    ) -> None:
+        """
+        Stores our item in Dynamodb
+        """
+        opts = self.make_put_item_opts(
+            ConditionExpression=ConditionExpression,
+            fail_on_exists=fail_on_exists,
+            **kwargs,
+        )
         return DYNAMOCLIENT.put_item(**opts)
 
-    async def update(self, **opts):
+    def make_update_opts(self, pk_name: str = "pk", sk_name: str = "sk", **opts):
         diff = self._diff
-        if not self._diff.hasChanged:
-            return None
-        pk_name = self._config().indexes.table.partitionkey
-        sk_name = self._config().indexes.table.sortkey
-        if pk_name in diff.keys or sk_name in diff.keys:
-            raise AttributeError(
-                "Cannot update table key attributes. Use `self.save()` instead."
-            )
-
         attribute_names = {}
         attribute_values = {}
         set_statement_items = []
@@ -583,6 +591,29 @@ class DynamojoBase(BaseModel, ABC):
         }
 
         opts["UpdateExpression"] = f"{set_statement} {del_statement}"
+        if condition_expression := opts.get("ConditionExpression"):
+            exp = self._get_raw_condition_expression(
+                exp=condition_expression,
+                expression_type="ConditionExpression",
+            )
+            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
+            opts["ExpressionAttributeValues"].update(exp["ExpressionAttributeValues"])
+            opts["ConditionExpression"] = exp["ConditionExpression"]
+
+        return opts
+
+    async def update(self, **opts):
+        diff = self._diff
+        if not self._diff.hasChanged:
+            return None
+        pk_name = self._config().indexes.table.partitionkey
+        sk_name = self._config().indexes.table.sortkey
+        if pk_name in diff.keys or sk_name in diff.keys:
+            raise AttributeError(
+                "Cannot update table key attributes. Use `self.save()` instead."
+            )
+
+        opts = self.make_update_opts(pk_name=pk_name, sk_name=sk_name, **opts)
         DYNAMOCLIENT.update_item(**opts)
         return self
 
