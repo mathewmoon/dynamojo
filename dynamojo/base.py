@@ -245,10 +245,18 @@ class DynamojoBase(BaseModel, ABC):
                 index = self._get_index_from_attributes(*attribute_names)
 
             for placeholder, attr in raw_exp.attribute_name_placeholders.items():
+
                 if attr == attribute_names[0]:
-                    raw_exp.attribute_name_placeholders[placeholder] = (
-                        index.partitionkey
-                    )
+                    if type(index) == Lsi:
+                        partitionkey = [
+                            x.partitionkey
+                            for x in self._config().index_maps
+                            if x.index.name == "table"
+                        ][0]
+                    else:
+                        partitionkey = index.partitionkey
+
+                    raw_exp.attribute_name_placeholders[placeholder] = partitionkey
                 if len(attribute_names) == 2 and attr == attribute_names[1]:
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
 
@@ -297,6 +305,7 @@ class DynamojoBase(BaseModel, ABC):
             opts[expression_type] = opts[expression_type].replace(key, new_key)
 
         opts["TableName"] = self._config().table
+
         return opts
 
     @classmethod
