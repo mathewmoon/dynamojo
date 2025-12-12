@@ -17,7 +17,7 @@ from boto3.dynamodb.types import Binary, Decimal
 from pydantic import BaseModel, PrivateAttr, model_validator, Field, field_validator
 
 from .boto import DYNAMOCLIENT
-from .index import Index, Lsi
+from .index import Index, Lsi, Gsi, TableIndex
 from .config import DynamojoConfig
 from .exceptions import StaticAttributeError, IndexNotFoundError
 from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
@@ -175,44 +175,30 @@ class DynamojoBase(BaseModel, ABC):
         If multiple indexes match then the table index, if matched is returned first. If
         not the table index then the first match in the list.
         """
-        for x in cls._config().index_maps:
-            if x.index.name == "table":
-                table_index_map = x
-                break
-        matches = {}
+        lsi_indexes = [x for x in cls._config().index_maps if isinstance(x.index, Lsi)]
+        gsi_indexes = [x for x in cls._config().index_maps if isinstance(x.index, Gsi)]
 
-        for mapping in cls._config().index_maps:
-            if isinstance(mapping.index, Lsi):
-                pk = table_index_map.partitionkey
-            else:
-                pk = mapping.partitionkey
+        table_pks = [cls._config().indexes.table.partitionkey]
+        pk_alias = cls._config()._index_aliases.get(
+            cls._config().indexes.table.partitionkey
+        )
+        if pk_alias:
+            table_pks.append(pk_alias)
 
-            if hasattr(mapping, "sortkey"):
-                sk = mapping.sortkey
-            else:
-                sk = None
+        if partitionkey in table_pks and sortkey == cls._config().indexes.table.sortkey:
+            return cls._config().indexes.table
 
-            if (
-                # If we only had one key specified it HAS to be the partition
-                sortkey is None
-                and partitionkey == pk
-            ) or (
-                partitionkey is not None
-                and sortkey is not None
-                and (
-                    pk == partitionkey
-                    # Catch cases where our key is not composite (yuck!)
-                    and (sk == sortkey or sk is None)
-                )
-            ):
-                matches[mapping.index.name] = mapping.index
+        for idx in lsi_indexes:
+            if partitionkey in table_pks and sortkey == idx.sortkey:
+                return idx.index
 
-        if not matches:
-            raise IndexNotFoundError(
-                "Could not find a suitable index. Either specify a valid index or change the Condition statement"
-            )
+        for idx in gsi_indexes:
+            if partitionkey == idx.partitionkey and sortkey == idx.sortkey:
+                return idx.index
 
-        return matches.get("table", list(matches.values())[0])
+        raise IndexNotFoundError(
+            "Could not find a suitable index. Either specify a valid index or change the Condition statement"
+        )
 
     @classmethod
     def _get_raw_condition_expression(
@@ -243,16 +229,13 @@ class DynamojoBase(BaseModel, ABC):
 
             if index is None:
                 index = self._get_index_from_attributes(*attribute_names)
+                # The problem here is that if the index uses an aliase we don't get the correct
+                # key names
 
             for placeholder, attr in raw_exp.attribute_name_placeholders.items():
-
                 if attr == attribute_names[0]:
                     if type(index) == Lsi:
-                        partitionkey = [
-                            x.partitionkey
-                            for x in self._config().index_maps
-                            if x.index.name == "table"
-                        ][0]
+                        partitionkey = self._config().indexes.table.partitionkey
                     else:
                         partitionkey = index.partitionkey
 
