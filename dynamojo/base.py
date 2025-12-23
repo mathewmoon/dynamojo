@@ -318,8 +318,8 @@ class DynamojoBase(BaseModel, ABC):
             for index, alias in cls._config()._index_aliases.items():
                 res[alias] = item[index]
 
-        res = cls.model_construct(**(res))
-        # IMPORTANT: All privateattrs have to be set AFTER model_construct() because
+        res = cls.model_validate(res)
+        # IMPORTANT: All privateattrs have to be set AFTER model_validate() because
         # model_construct() does not call __init__()
         res._original = deepcopy(res)
         return res
