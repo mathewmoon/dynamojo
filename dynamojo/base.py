@@ -178,6 +178,7 @@ class DynamojoBase(BaseModel, ABC):
         lsi_indexes = [x for x in cls._config().index_maps if isinstance(x.index, Lsi)]
         gsi_indexes = [x for x in cls._config().index_maps if isinstance(x.index, Gsi)]
 
+        # Need to handle GSI's without sortkeys
         table_pks = [cls._config().indexes.table.partitionkey]
         pk_alias = cls._config()._index_aliases.get(
             cls._config().indexes.table.partitionkey
@@ -185,7 +186,13 @@ class DynamojoBase(BaseModel, ABC):
         if pk_alias:
             table_pks.append(pk_alias)
 
-        if partitionkey in table_pks and sortkey == cls._config().indexes.table.sortkey:
+        table_sks = [cls._config().indexes.table.sortkey]
+        sk_alias = cls._config()._index_aliases.get(cls._config().indexes.table.sortkey)
+
+        if sk_alias:
+            table_sks.append(sk_alias)
+
+        if partitionkey in table_pks and (sortkey in table_sks or sortkey is None):
             return cls._config().indexes.table
 
         for idx in lsi_indexes:
@@ -193,7 +200,9 @@ class DynamojoBase(BaseModel, ABC):
                 return idx.index
 
         for idx in gsi_indexes:
-            if partitionkey == idx.partitionkey and sortkey == idx.sortkey:
+            if partitionkey == idx.partitionkey and (
+                sortkey == idx.sortkey or sortkey is None
+            ):
                 return idx.index
 
         raise IndexNotFoundError(
@@ -356,8 +365,30 @@ class DynamojoBase(BaseModel, ABC):
         return {k: TYPE_DESERIALIZER.deserialize(v) for k, v in data.items()}
 
     @classmethod
+    async def batch_get_item(cls, keys: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        keys = [
+            await cls.fetch(pk=key["pk"], sk=key["sk"], key_only=True) for key in keys
+        ]
+        batches = [keys[i : i + 100] for i in range(0, len(keys), 100)]
+        results = []
+
+        for batch in batches:
+            res = DYNAMOCLIENT.batch_get_item(
+                RequestItems={cls._config().table: {"Keys": batch}}
+            )
+            results += res["Responses"][cls._config().table]
+
+            while unprocessed_keys := res.get("UnprocessedKeys"):
+                res = DYNAMOCLIENT.batch_get_item(
+                    RequestItems={cls._config().table: {"Keys": unprocessed_keys}}
+                )
+                results += res["Responses"][cls._config().table]
+
+        return [cls._construct_from_db(item) for item in results]
+
+    @classmethod
     async def fetch(
-        cls, pk: str, sk: str = None, **kwargs: dict[str, Any]
+        cls, pk: str, sk: str = None, key_only: bool = False, **kwargs: dict[str, Any]
     ) -> DynamojoBase:
         """
         Returns a rehydrated object from the database
@@ -371,6 +402,9 @@ class DynamojoBase(BaseModel, ABC):
         serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
 
         opts = {"Key": serialized_key, "TableName": cls._config().table, **kwargs}
+
+        if key_only:
+            return opts["Key"]
 
         res = DYNAMOCLIENT.get_item(**opts)
 
