@@ -370,6 +370,7 @@ class DynamojoBase(BaseModel, ABC):
             await cls.fetch(pk=key["pk"], sk=key["sk"], key_only=True) for key in keys
         ]
         batches = [keys[i : i + 100] for i in range(0, len(keys), 100)]
+        getLogger().debug(f"Batching {len(keys)} keys into {len(batches)} batches")
         results = []
 
         for batch in batches:
@@ -522,7 +523,7 @@ class DynamojoBase(BaseModel, ABC):
             else "Querying with table index"
         )
 
-        getLogger().info(msg)
+        getLogger().debug(msg)
 
         res = DYNAMOCLIENT.query(**opts)
 

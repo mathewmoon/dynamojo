@@ -86,8 +86,8 @@ class IndexList(UserDict):
             self.data[index.name] = index
 
 
-def get_indexes(table_name: str) -> IndexList:
-    desc = DYNAMOCLIENT.describe_table(TableName=table_name)["Table"]
+def get_indexes(table_name: str, table_schema: dict = None) -> IndexList:
+    desc = table_schema or DYNAMOCLIENT.describe_table(TableName=table_name)["Table"]
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])
 
