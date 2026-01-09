@@ -4,9 +4,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import UserDict
 from copy import deepcopy
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, TypeVar
+from typing import Any
 
 from boto3.dynamodb.conditions import (
     AttributeBase,
@@ -14,10 +14,9 @@ from boto3.dynamodb.conditions import (
     ConditionExpressionBuilder,
 )
 from boto3.dynamodb.types import Binary, Decimal
-from pydantic import BaseModel, PrivateAttr, model_validator, Field, field_validator
+from pydantic import BaseModel
 
-from .boto import DYNAMOCLIENT
-from .index import Index, Lsi, Gsi, TableIndex
+from .index import Index, Lsi, Gsi
 from .config import DynamojoConfig
 from .exceptions import StaticAttributeError, IndexNotFoundError
 from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
@@ -302,7 +301,9 @@ class DynamojoBase(BaseModel, ABC):
 
     @classmethod
     async def execute_write_transaction(cls, expressions: list[dict], **opts) -> dict:
-        res = DYNAMOCLIENT.transact_write_items(TransactItems=expressions, **opts)
+        res = cls._config().dynamo_client.transact_write_items(
+            TransactItems=expressions, **opts
+        )
         return res
 
     @classmethod
@@ -350,7 +351,7 @@ class DynamojoBase(BaseModel, ABC):
 
         serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
 
-        res = DYNAMOCLIENT.delete_item(
+        res = self._config().dynamo_client.delete_item(
             Key=serialized_key, TableName=self._config().table
         )
 
@@ -374,13 +375,13 @@ class DynamojoBase(BaseModel, ABC):
         results = []
 
         for batch in batches:
-            res = DYNAMOCLIENT.batch_get_item(
+            res = cls._config().dynamo_client.batch_get_item(
                 RequestItems={cls._config().table: {"Keys": batch}}
             )
             results += res["Responses"][cls._config().table]
 
             while unprocessed_keys := res.get("UnprocessedKeys"):
-                res = DYNAMOCLIENT.batch_get_item(
+                res = cls._config().dynamo_client.batch_get_item(
                     RequestItems={cls._config().table: {"Keys": unprocessed_keys}}
                 )
                 results += res["Responses"][cls._config().table]
@@ -407,7 +408,7 @@ class DynamojoBase(BaseModel, ABC):
         if key_only:
             return opts["Key"]
 
-        res = DYNAMOCLIENT.get_item(**opts)
+        res = cls._config().dynamo_client.get_item(**opts)
 
         if item := res.get("Item"):
             return cls._construct_from_db(item)
@@ -525,7 +526,7 @@ class DynamojoBase(BaseModel, ABC):
 
         getLogger().debug(msg)
 
-        res = DYNAMOCLIENT.query(**opts)
+        res = cls._config().dynamo_client.query(**opts)
 
         res["Items"] = [cls._construct_from_db(item) for item in res["Items"]]
         return QueryResults(**res)
@@ -580,7 +581,7 @@ class DynamojoBase(BaseModel, ABC):
             fail_on_exists=fail_on_exists,
             **kwargs,
         )
-        return DYNAMOCLIENT.put_item(**opts)
+        return self._config().dynamo_client.put_item(**opts)
 
     def make_update_opts(self, pk_name: str = "pk", sk_name: str = "sk", **opts):
         diff = self._diff
@@ -641,7 +642,7 @@ class DynamojoBase(BaseModel, ABC):
             )
 
         opts = self.make_update_opts(pk_name=pk_name, sk_name=sk_name, **opts)
-        DYNAMOCLIENT.update_item(**opts)
+        self._config().dynamo_client.update_item(**opts)
         return self
 
 

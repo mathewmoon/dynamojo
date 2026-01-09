@@ -4,7 +4,7 @@ from typing import List, Callable, Any
 
 from pydantic import BaseModel
 
-from .boto import DYNAMOCLIENT
+import boto3
 
 
 class Mutator(BaseModel):
@@ -86,8 +86,14 @@ class IndexList(UserDict):
             self.data[index.name] = index
 
 
-def get_indexes(table_name: str, table_schema: dict = None) -> IndexList:
-    desc = table_schema or DYNAMOCLIENT.describe_table(TableName=table_name)["Table"]
+def get_indexes(
+    table_name: str, table_schema: dict = None, dynamo_client=None
+) -> IndexList:
+    if not dynamo_client:
+        dynamo_client = boto3.client("dynamodb")
+
+    desc = table_schema or dynamo_client.describe_table(TableName=table_name)["Table"]
+
     gsi_list = desc.get("GlobalSecondaryIndexes", [])
     lsi_list = desc.get("LocalSecondaryIndexes", [])
 
