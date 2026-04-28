@@ -655,6 +655,230 @@ class DynamojoBase(BaseModel, ABC):
         self._config().dynamo_client.update_item(**opts)
         return self
 
+    # ------------------------------------------------------------------
+    # Atomic update helpers
+    # ------------------------------------------------------------------
+
+    def _validate_field_type(self, field_name: str, expected_origins: set) -> None:
+        import typing
+        import types
+
+        if field_name not in type(self).model_fields:
+            raise AttributeError(
+                f"Field '{field_name}' does not exist on {type(self).__name__}"
+            )
+        if not expected_origins:
+            return
+        hints = typing.get_type_hints(type(self))
+        annotation = hints[field_name]
+        origin = typing.get_origin(annotation)
+        if origin is typing.Union or (
+            hasattr(types, "UnionType") and isinstance(annotation, types.UnionType)
+        ):
+            args = typing.get_args(annotation)
+            annotation = next(
+                (
+                    a
+                    for a in args
+                    if typing.get_origin(a) in expected_origins or a in expected_origins
+                ),
+                None,
+            )
+            origin = typing.get_origin(annotation) if annotation else None
+        if origin not in expected_origins and annotation not in expected_origins:
+            raise TypeError(
+                f"Field '{field_name}' on {type(self).__name__} is not of the expected type"
+            )
+
+    def _build_key(self) -> dict:
+        pk_name = self._config().indexes.table.partitionkey
+        sk_name = self._config().indexes.table.sortkey
+        key = {pk_name: TYPE_SERIALIZER.serialize(self._db_item()[pk_name])}
+        if sk_name is not None:
+            key[sk_name] = TYPE_SERIALIZER.serialize(self._db_item()[sk_name])
+        return key
+
+    def _atomic_update(
+        self,
+        update_expression: str,
+        attribute_names: dict,
+        attribute_values: dict | None,
+        condition_expression: ConditionBase = None,
+    ) -> None:
+        opts = {
+            "TableName": self._config().table,
+            "Key": self._build_key(),
+            "UpdateExpression": update_expression,
+            "ExpressionAttributeNames": attribute_names,
+        }
+        if attribute_values:
+            opts["ExpressionAttributeValues"] = attribute_values
+        if condition_expression is not None:
+            exp = self._get_raw_condition_expression(
+                exp=condition_expression,
+                expression_type="ConditionExpression",
+            )
+            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
+            opts.setdefault("ExpressionAttributeValues", {}).update(
+                exp["ExpressionAttributeValues"]
+            )
+            opts["ConditionExpression"] = exp["ConditionExpression"]
+        self._config().dynamo_client.update_item(**opts)
+
+    def _sync_field(self, field_name: str, new_val: Any) -> None:
+        setattr(self, field_name, new_val)
+        self._original.__dict__[field_name] = deepcopy(new_val)
+
+    # ------------------------------------------------------------------
+    # Atomic list operations
+    # ------------------------------------------------------------------
+
+    async def list_append(
+        self,
+        field_name: str,
+        values: list,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {list})
+        self._atomic_update(
+            "SET #field = list_append(#field, :items)",
+            {"#field": field_name},
+            {":items": TYPE_SERIALIZER.serialize(list(values))},
+            ConditionExpression,
+        )
+        self._sync_field(field_name, list(getattr(self, field_name)) + list(values))
+
+    async def list_prepend(
+        self,
+        field_name: str,
+        values: list,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {list})
+        self._atomic_update(
+            "SET #field = list_append(:items, #field)",
+            {"#field": field_name},
+            {":items": TYPE_SERIALIZER.serialize(list(values))},
+            ConditionExpression,
+        )
+        self._sync_field(field_name, list(values) + list(getattr(self, field_name)))
+
+    async def list_remove(
+        self,
+        field_name: str,
+        index: int,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {list})
+        self._atomic_update(
+            f"REMOVE #field[{index}]",
+            {"#field": field_name},
+            None,
+            ConditionExpression,
+        )
+        new_val = list(getattr(self, field_name))
+        new_val.pop(index)
+        self._sync_field(field_name, new_val)
+
+    async def list_set(
+        self,
+        field_name: str,
+        index: int,
+        value: Any,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {list})
+        self._atomic_update(
+            f"SET #field[{index}] = :value",
+            {"#field": field_name},
+            {":value": TYPE_SERIALIZER.serialize(value)},
+            ConditionExpression,
+        )
+        new_val = list(getattr(self, field_name))
+        new_val[index] = value
+        self._sync_field(field_name, new_val)
+
+    # ------------------------------------------------------------------
+    # Atomic numeric operation
+    # ------------------------------------------------------------------
+
+    async def number_add(
+        self,
+        field_name: str,
+        delta: int | float,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {int, float})
+        # boto3 TypeSerializer rejects float; use Decimal for wire encoding
+        serializable_delta = Decimal(str(delta)) if isinstance(delta, float) else delta
+        self._atomic_update(
+            "ADD #field :delta",
+            {"#field": field_name},
+            {":delta": TYPE_SERIALIZER.serialize(serializable_delta)},
+            ConditionExpression,
+        )
+        self._sync_field(field_name, getattr(self, field_name) + delta)
+
+    # ------------------------------------------------------------------
+    # Atomic dict/map operations
+    # ------------------------------------------------------------------
+
+    async def dict_set(
+        self,
+        field_name: str,
+        key: str,
+        value: Any,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {dict})
+        self._atomic_update(
+            "SET #field.#key = :value",
+            {"#field": field_name, "#key": key},
+            {":value": TYPE_SERIALIZER.serialize(value)},
+            ConditionExpression,
+        )
+        self._sync_field(field_name, {**getattr(self, field_name), key: value})
+
+    async def dict_remove(
+        self,
+        field_name: str,
+        key: str,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, {dict})
+        self._atomic_update(
+            "REMOVE #field.#key",
+            {"#field": field_name, "#key": key},
+            None,
+            ConditionExpression,
+        )
+        self._sync_field(
+            field_name,
+            {k: v for k, v in getattr(self, field_name).items() if k != key},
+        )
+
+    # ------------------------------------------------------------------
+    # Atomic conditional initialiser
+    # ------------------------------------------------------------------
+
+    async def set_if_not_exists(
+        self,
+        field_name: str,
+        value: Any,
+        ConditionExpression: ConditionBase = None,
+    ) -> None:
+        self._validate_field_type(field_name, set())
+        self._atomic_update(
+            "SET #field = if_not_exists(#field, :value)",
+            {"#field": field_name},
+            {":value": TYPE_SERIALIZER.serialize(value)},
+            ConditionExpression,
+        )
+        # Optimistically assume the field was absent in DynamoDB; if it already
+        # existed the DynamoDB write was a no-op and the local value was already
+        # correct — caller's responsibility to handle that case.
+        self._sync_field(field_name, value)
+
 
 @dataclass
 class QueryResults(UserDict):
