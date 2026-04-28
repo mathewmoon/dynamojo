@@ -9,7 +9,6 @@ from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig, JoinedAttribute
 from boto3.dynamodb.conditions import Key, Attr
 
-
 TABLE = "test-dynamojo"
 indexes = get_indexes("test-dynamojo")
 DD_API_KEY = environ.get("DD_API_KEY")

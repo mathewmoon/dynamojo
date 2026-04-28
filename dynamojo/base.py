@@ -334,7 +334,11 @@ class DynamojoBase(BaseModel, ABC):
         res._original = deepcopy(res)
         return res
 
-    async def delete(self) -> None:
+    async def delete(
+        self,
+        ConditionExpression: ConditionBase = None,
+        **kwargs,
+    ) -> None:
         """
         Deletes an item from the table
         """
@@ -351,9 +355,15 @@ class DynamojoBase(BaseModel, ABC):
 
         serialized_key = {k: TYPE_SERIALIZER.serialize(v) for k, v in key.items()}
 
-        res = self._config().dynamo_client.delete_item(
-            Key=serialized_key, TableName=self._config().table
-        )
+        opts = {"Key": serialized_key, "TableName": self._config().table, **kwargs}
+
+        if ConditionExpression:
+            exp = self._get_raw_condition_expression(
+                ConditionExpression, expression_type="ConditionExpression"
+            )
+            opts.update(exp)
+
+        res = self._config().dynamo_client.delete_item(**opts)
 
         return res
 

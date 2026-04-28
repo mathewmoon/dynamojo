@@ -2,14 +2,12 @@
 from pydantic import BaseModel, PrivateAttr
 from typing import TYPE_CHECKING, Any, Dict, NamedTuple
 
-
 if TYPE_CHECKING:
     from .base import DynamojoBase
 else:
     DynamojoBase = object
 
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
-
 
 TYPE_SERIALIZER = TypeSerializer()
 TYPE_DESERIALIZER = TypeDeserializer()

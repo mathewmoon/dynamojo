@@ -12,7 +12,6 @@ from .index import (
 )
 from .utils import Delta
 
-
 __all__ = [
     "Delta",
     "DynamojoBase",
