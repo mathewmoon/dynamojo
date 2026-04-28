@@ -210,8 +210,8 @@ class TestDictSet:
         item, client = make_item()
         run(item.dict_set("metadata", "z", "val"))
         kw = call_kwargs(client)
-        assert kw["UpdateExpression"] == "SET #field.#key = :value"
-        assert kw["ExpressionAttributeNames"] == {"#field": "metadata", "#key": "z"}
+        assert kw["UpdateExpression"] == "SET #metadata.#metadata__z = :value"
+        assert kw["ExpressionAttributeNames"] == {"#metadata": "metadata", "#metadata__z": "z"}
         assert ":value" in kw["ExpressionAttributeValues"]
 
     def test_local_state_adds_key(self):
@@ -229,6 +229,20 @@ class TestDictSet:
         run(item.dict_set("metadata", "z", 1))
         assert "metadata" not in item._diff.keys
 
+    def test_deep_path_expression(self):
+        item, client = make_item()
+        run(item.dict_set("metadata", "a.b.c", "deep"))
+        kw = call_kwargs(client)
+        assert kw["UpdateExpression"] == "SET #metadata.#metadata__a.#metadata__a__b.#metadata__a__b__c = :value"
+        assert kw["ExpressionAttributeNames"]["#metadata__a"] == "a"
+        assert kw["ExpressionAttributeNames"]["#metadata__a__b"] == "b"
+        assert kw["ExpressionAttributeNames"]["#metadata__a__b__c"] == "c"
+
+    def test_deep_path_local_state(self):
+        item, _ = make_item()
+        run(item.dict_set("metadata", "nested.key", "val"))
+        assert item.metadata["nested"] == {"key": "val"}
+
 
 # ---------------------------------------------------------------------------
 # dict_remove
@@ -239,8 +253,8 @@ class TestDictRemove:
         item, client = make_item()
         run(item.dict_remove("metadata", "x"))
         kw = call_kwargs(client)
-        assert kw["UpdateExpression"] == "REMOVE #field.#key"
-        assert kw["ExpressionAttributeNames"] == {"#field": "metadata", "#key": "x"}
+        assert kw["UpdateExpression"] == "REMOVE #metadata.#metadata__x"
+        assert kw["ExpressionAttributeNames"] == {"#metadata": "metadata", "#metadata__x": "x"}
 
     def test_no_expression_attribute_values_without_condition(self):
         item, client = make_item()
@@ -257,6 +271,20 @@ class TestDictRemove:
         item, _ = make_item()
         run(item.dict_remove("metadata", "x"))
         assert "metadata" not in item._diff.keys
+
+    def test_deep_path_expression(self):
+        item, client = make_item()
+        run(item.dict_remove("metadata", "x.nested"))
+        kw = call_kwargs(client)
+        assert kw["UpdateExpression"] == "REMOVE #metadata.#metadata__x.#metadata__x__nested"
+        assert kw["ExpressionAttributeNames"]["#metadata__x"] == "x"
+        assert kw["ExpressionAttributeNames"]["#metadata__x__nested"] == "nested"
+
+    def test_deep_path_local_state(self):
+        item, _ = make_item()
+        item.metadata = {"x": {"nested": "val", "other": 1}, "y": 2}
+        run(item.dict_remove("metadata", "x.nested"))
+        assert item.metadata == {"x": {"other": 1}, "y": 2}
 
 
 # ---------------------------------------------------------------------------

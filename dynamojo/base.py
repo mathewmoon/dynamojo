@@ -22,6 +22,47 @@ from .exceptions import StaticAttributeError, IndexNotFoundError
 from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
 
 
+# ---------------------------------------------------------------------------
+# Dict-path helpers — shared by standalone methods and make_update_opts.
+#
+# WARNING: dots inside a key name (e.g. {"some.key": 1}) are indistinguishable
+# from path separators.  Use only attribute names that do not contain literal
+# dots — which is strongly recommended by DynamoDB conventions anyway.
+# ---------------------------------------------------------------------------
+
+def _dict_path_names(field_name: str, path: str) -> tuple[dict, str]:
+    """Return (ExpressionAttributeNames, expression_path) for a dot-separated path.
+
+    Example: field_name="mydict", path="a.b.c" →
+      names   = {"#mydict": "mydict", "#mydict__a": "a",
+                 "#mydict__a__b": "b", "#mydict__a__b__c": "c"}
+      expr    = "#mydict.#mydict__a.#mydict__a__b.#mydict__a__b__c"
+    """
+    parts = path.split(".")
+    names: dict[str, str] = {f"#{field_name}": field_name}
+    key = field_name
+    placeholders = [f"#{field_name}"]
+    for part in parts:
+        key = f"{key}__{part}"
+        ph = f"#{key}"
+        names[ph] = part
+        placeholders.append(ph)
+    return names, ".".join(placeholders)
+
+
+def _deep_set(d: dict, parts: list[str], value: Any) -> None:
+    for part in parts[:-1]:
+        d = d.setdefault(part, {})
+    d[parts[-1]] = value
+
+
+def _deep_remove(d: dict, parts: list[str]) -> None:
+    for part in parts[:-1]:
+        if not isinstance(d := d.get(part), dict):
+            return
+    d.pop(parts[-1], None)
+
+
 class DynamojoBase(BaseModel, ABC):
     """A class to use as a base for modeling objects to store in Dynamodb. This class
     is intended to be inherited by another class, which actually defines the model.
@@ -672,22 +713,20 @@ class DynamojoBase(BaseModel, ABC):
             )
             add_statement_items.append(f"#{field} :_na_{field}")
 
-        # dict_set — one SET path per nested key
+        # dict_set — dot-separated path, arbitrary depth
         for field, mapping in (dict_set or {}).items():
-            attribute_names[f"#{field}"] = field
-            for k, v in mapping.items():
-                nk = f"#{field}__{k}"
-                vk = f":_ds_{field}__{k}"
-                attribute_names[nk] = k
+            for path, v in mapping.items():
+                names, expr_path = _dict_path_names(field, path)
+                vk = f":_ds_{field}__{path.replace('.', '__')}"
+                attribute_names.update(names)
                 attribute_values[vk] = v
-                set_statement_items.append(f"#{field}.{nk} = {vk}")
+                set_statement_items.append(f"{expr_path} = {vk}")
 
-        # dict_remove — one REMOVE path per nested key
-        for field, key in (dict_remove or {}).items():
-            attribute_names[f"#{field}"] = field
-            nk = f"#{field}__{key}"
-            attribute_names[nk] = key
-            del_statement_items.append(f"#{field}.{nk}")
+        # dict_remove — dot-separated path, arbitrary depth
+        for field, path in (dict_remove or {}).items():
+            names, expr_path = _dict_path_names(field, path)
+            attribute_names.update(names)
+            del_statement_items.append(expr_path)
 
         # set_if_not_exists
         for field, value in (set_if_not_exists or {}).items():
@@ -784,11 +823,14 @@ class DynamojoBase(BaseModel, ABC):
         for field, delta in (number_add or {}).items():
             self._sync_field(field, getattr(self, field) + delta)
         for field, mapping in (dict_set or {}).items():
-            self._sync_field(field, {**getattr(self, field), **mapping})
-        for field, key in (dict_remove or {}).items():
-            self._sync_field(
-                field, {k: v for k, v in getattr(self, field).items() if k != key}
-            )
+            new_val = deepcopy(getattr(self, field))
+            for path, value in mapping.items():
+                _deep_set(new_val, path.split("."), value)
+            self._sync_field(field, new_val)
+        for field, path in (dict_remove or {}).items():
+            new_val = deepcopy(getattr(self, field))
+            _deep_remove(new_val, path.split("."))
+            self._sync_field(field, new_val)
         for field, value in (set_if_not_exists or {}).items():
             self._sync_field(field, value)
 
@@ -965,36 +1007,43 @@ class DynamojoBase(BaseModel, ABC):
     async def dict_set(
         self,
         field_name: str,
-        key: str,
+        path: str,
         value: Any,
         ConditionExpression: ConditionBase = None,
     ) -> None:
+        # NOTE: dots in key names are treated as path separators.
+        # See module-level warning in _dict_path_names.
         self._validate_field_type(field_name, {dict})
+        names, expr_path = _dict_path_names(field_name, path)
         self._atomic_update(
-            "SET #field.#key = :value",
-            {"#field": field_name, "#key": key},
+            f"SET {expr_path} = :value",
+            names,
             {":value": TYPE_SERIALIZER.serialize(value)},
             ConditionExpression,
         )
-        self._sync_field(field_name, {**getattr(self, field_name), key: value})
+        new_val = deepcopy(getattr(self, field_name))
+        _deep_set(new_val, path.split("."), value)
+        self._sync_field(field_name, new_val)
 
     async def dict_remove(
         self,
         field_name: str,
-        key: str,
+        path: str,
         ConditionExpression: ConditionBase = None,
     ) -> None:
+        # NOTE: dots in key names are treated as path separators.
+        # See module-level warning in _dict_path_names.
         self._validate_field_type(field_name, {dict})
+        names, expr_path = _dict_path_names(field_name, path)
         self._atomic_update(
-            "REMOVE #field.#key",
-            {"#field": field_name, "#key": key},
+            f"REMOVE {expr_path}",
+            names,
             None,
             ConditionExpression,
         )
-        self._sync_field(
-            field_name,
-            {k: v for k, v in getattr(self, field_name).items() if k != key},
-        )
+        new_val = deepcopy(getattr(self, field_name))
+        _deep_remove(new_val, path.split("."))
+        self._sync_field(field_name, new_val)
 
     # ------------------------------------------------------------------
     # Atomic conditional initialiser
