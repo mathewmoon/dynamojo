@@ -593,19 +593,42 @@ class DynamojoBase(BaseModel, ABC):
         )
         return self._config().dynamo_client.put_item(**opts)
 
-    def make_update_opts(self, pk_name: str = "pk", sk_name: str = "sk", **opts):
+    def make_update_opts(
+        self,
+        pk_name: str = "pk",
+        sk_name: str = "sk",
+        list_append: dict[str, list] | None = None,
+        list_prepend: dict[str, list] | None = None,
+        list_remove: dict[str, int] | None = None,
+        list_set: dict[str, tuple[int, Any]] | None = None,
+        number_add: dict[str, int | float] | None = None,
+        dict_set: dict[str, dict] | None = None,
+        dict_remove: dict[str, str] | None = None,
+        set_if_not_exists: dict[str, Any] | None = None,
+        **opts,
+    ):
+        atomic_fields = set(
+            list(list_append or {})
+            + list(list_prepend or {})
+            + list(list_remove or {})
+            + list(list_set or {})
+            + list(number_add or {})
+            + list(dict_set or {})
+            + list(dict_remove or {})
+            + list(set_if_not_exists or {})
+        )
+
         diff = self._diff
         attribute_names = {}
         attribute_values = {}
         set_statement_items = []
         del_statement_items = []
+        add_statement_items = []
         set_items = {**diff.added, **diff.changed}
-        key = {pk_name: TYPE_SERIALIZER.serialize(self._db_item()[pk_name])}
-        if sk_name is not None:
-            key[sk_name] = TYPE_SERIALIZER.serialize(self._db_item()[sk_name])
 
+        # diff-based SET/REMOVE — skip fields covered by an atomic op
         for attr, val in self._db_item().items():
-            if attr in diff.keys:
+            if attr in diff.keys and attr not in atomic_fields:
                 attribute_names[f"#{attr}"] = attr
                 attribute_values[f":{attr}"] = val
                 if attr in set_items.keys():
@@ -614,36 +637,116 @@ class DynamojoBase(BaseModel, ABC):
                 else:
                     del_statement_items.append(statement)
 
-        set_statement = (
-            f"SET {', '.join(set_statement_items)}" if set_statement_items else ""
-        )
-        del_statement = (
-            f"REMOVE {', '.join(del_statement_items)}" if del_statement_items else ""
-        )
+        # list_append
+        for field, values in (list_append or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_la_{field}"] = list(values)
+            set_statement_items.append(
+                f"#{field} = list_append(#{field}, :_la_{field})"
+            )
+
+        # list_prepend
+        for field, values in (list_prepend or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_lp_{field}"] = list(values)
+            set_statement_items.append(
+                f"#{field} = list_append(:_lp_{field}, #{field})"
+            )
+
+        # list_remove — index embedded in path, no value placeholder
+        for field, index in (list_remove or {}).items():
+            attribute_names[f"#{field}"] = field
+            del_statement_items.append(f"#{field}[{index}]")
+
+        # list_set — index embedded in path
+        for field, (index, value) in (list_set or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_ls_{field}"] = value
+            set_statement_items.append(f"#{field}[{index}] = :_ls_{field}")
+
+        # number_add — goes in ADD clause; convert float → Decimal for the serializer
+        for field, delta in (number_add or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_na_{field}"] = (
+                Decimal(str(delta)) if isinstance(delta, float) else delta
+            )
+            add_statement_items.append(f"#{field} :_na_{field}")
+
+        # dict_set — one SET path per nested key
+        for field, mapping in (dict_set or {}).items():
+            attribute_names[f"#{field}"] = field
+            for k, v in mapping.items():
+                nk = f"#{field}__{k}"
+                vk = f":_ds_{field}__{k}"
+                attribute_names[nk] = k
+                attribute_values[vk] = v
+                set_statement_items.append(f"#{field}.{nk} = {vk}")
+
+        # dict_remove — one REMOVE path per nested key
+        for field, key in (dict_remove or {}).items():
+            attribute_names[f"#{field}"] = field
+            nk = f"#{field}__{key}"
+            attribute_names[nk] = key
+            del_statement_items.append(f"#{field}.{nk}")
+
+        # set_if_not_exists
+        for field, value in (set_if_not_exists or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_ine_{field}"] = value
+            set_statement_items.append(
+                f"#{field} = if_not_exists(#{field}, :_ine_{field})"
+            )
+
+        clauses = filter(None, [
+            f"SET {', '.join(set_statement_items)}" if set_statement_items else "",
+            f"REMOVE {', '.join(del_statement_items)}" if del_statement_items else "",
+            f"ADD {', '.join(add_statement_items)}" if add_statement_items else "",
+        ])
 
         opts["TableName"] = self._config().table
-        opts["Key"] = key
+        opts["Key"] = self._build_key()
         opts["ExpressionAttributeNames"] = attribute_names
-        opts["ExpressionAttributeValues"] = {
+        opts["UpdateExpression"] = " ".join(clauses)
+
+        serialized_values = {
             k: TYPE_SERIALIZER.serialize(v) for k, v in attribute_values.items()
         }
+        if serialized_values:
+            opts["ExpressionAttributeValues"] = serialized_values
 
-        opts["UpdateExpression"] = f"{set_statement} {del_statement}"
         if condition_expression := opts.get("ConditionExpression"):
             exp = self._get_raw_condition_expression(
                 exp=condition_expression,
                 expression_type="ConditionExpression",
             )
             opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
-            opts["ExpressionAttributeValues"].update(exp["ExpressionAttributeValues"])
+            opts.setdefault("ExpressionAttributeValues", {}).update(
+                exp["ExpressionAttributeValues"]
+            )
             opts["ConditionExpression"] = exp["ConditionExpression"]
 
         return opts
 
-    async def update(self, **opts):
+    async def update(
+        self,
+        list_append: dict[str, list] | None = None,
+        list_prepend: dict[str, list] | None = None,
+        list_remove: dict[str, int] | None = None,
+        list_set: dict[str, tuple[int, Any]] | None = None,
+        number_add: dict[str, int | float] | None = None,
+        dict_set: dict[str, dict] | None = None,
+        dict_remove: dict[str, str] | None = None,
+        set_if_not_exists: dict[str, Any] | None = None,
+        **opts,
+    ):
+        has_atomic = any([
+            list_append, list_prepend, list_remove, list_set,
+            number_add, dict_set, dict_remove, set_if_not_exists,
+        ])
         diff = self._diff
-        if not self._diff.hasChanged:
+        if not diff.hasChanged and not has_atomic:
             return None
+
         pk_name = self._config().indexes.table.partitionkey
         sk_name = self._config().indexes.table.sortkey
         if pk_name in diff.keys or sk_name in diff.keys:
@@ -651,8 +754,44 @@ class DynamojoBase(BaseModel, ABC):
                 "Cannot update table key attributes. Use `self.save()` instead."
             )
 
-        opts = self.make_update_opts(pk_name=pk_name, sk_name=sk_name, **opts)
+        opts = self.make_update_opts(
+            pk_name=pk_name,
+            sk_name=sk_name,
+            list_append=list_append,
+            list_prepend=list_prepend,
+            list_remove=list_remove,
+            list_set=list_set,
+            number_add=number_add,
+            dict_set=dict_set,
+            dict_remove=dict_remove,
+            set_if_not_exists=set_if_not_exists,
+            **opts,
+        )
         self._config().dynamo_client.update_item(**opts)
+
+        for field, values in (list_append or {}).items():
+            self._sync_field(field, list(getattr(self, field)) + list(values))
+        for field, values in (list_prepend or {}).items():
+            self._sync_field(field, list(values) + list(getattr(self, field)))
+        for field, index in (list_remove or {}).items():
+            new = list(getattr(self, field))
+            new.pop(index)
+            self._sync_field(field, new)
+        for field, (index, value) in (list_set or {}).items():
+            new = list(getattr(self, field))
+            new[index] = value
+            self._sync_field(field, new)
+        for field, delta in (number_add or {}).items():
+            self._sync_field(field, getattr(self, field) + delta)
+        for field, mapping in (dict_set or {}).items():
+            self._sync_field(field, {**getattr(self, field), **mapping})
+        for field, key in (dict_remove or {}).items():
+            self._sync_field(
+                field, {k: v for k, v in getattr(self, field).items() if k != key}
+            )
+        for field, value in (set_if_not_exists or {}).items():
+            self._sync_field(field, value)
+
         return self
 
     # ------------------------------------------------------------------

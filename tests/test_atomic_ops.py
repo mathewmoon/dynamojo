@@ -376,3 +376,93 @@ class TestDiffIsolation:
         run(item.dict_set("metadata", "z", 1))
         assert "name" in item._diff.keys
         assert "metadata" not in item._diff.keys
+
+
+# ---------------------------------------------------------------------------
+# update() with atomic kwargs — composite and mixed cases
+# ---------------------------------------------------------------------------
+
+class TestUpdateWithAtomicOps:
+    def test_all_four_ops_in_one_call(self):
+        """The motivating example: four mutations, one update_item round-trip."""
+        item, client = make_item()
+        run(item.update(
+            list_remove={"keys": 0},
+            list_append={"keys": ["d"]},
+            dict_remove={"metadata": "x"},
+            dict_set={"metadata": {"z": "test"}},
+        ))
+        assert client.update_item.call_count == 1
+        kw = call_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert "list_append" in expr
+        assert "REMOVE" in expr
+        assert "#keys" in kw["ExpressionAttributeNames"].values() or \
+               "keys" in kw["ExpressionAttributeNames"].values()
+
+    def test_composite_local_state(self):
+        item, _ = make_item()
+        run(item.update(
+            list_append={"keys": ["d"]},
+            number_add={"count": 2},
+            dict_set={"metadata": {"z": "val"}},
+        ))
+        assert item.keys == ["a", "b", "c", "d"]
+        assert item.count == 7
+        assert item.metadata["z"] == "val"
+
+    def test_mixed_dirty_and_atomic(self):
+        """Dirty scalar field + atomic list op — one call, both applied."""
+        item, client = make_item()
+        item.name = "Bob"
+        run(item.update(list_append={"keys": ["d"]}))
+        assert client.update_item.call_count == 1
+        kw = call_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert "list_append" in expr
+        assert "name" in kw["ExpressionAttributeNames"].values()
+        assert item.name == "Bob"
+        assert item.keys == ["a", "b", "c", "d"]
+
+    def test_atomic_field_suppressed_from_diff(self):
+        """When a field is dirty AND in an atomic op, the SET is dropped; only ADD goes."""
+        item, client = make_item()
+        item.count = 99           # dirty — would normally generate SET #count = :count
+        run(item.update(number_add={"count": 1}))
+        kw = call_kwargs(client)
+        expr = kw["UpdateExpression"]
+        # ADD clause must be present
+        assert "ADD" in expr
+        # SET clause for count must NOT be present (atomic op wins over the diff SET)
+        assert ":count" not in kw.get("ExpressionAttributeValues", {})
+
+    def test_returns_none_with_no_changes_and_no_atomic_ops(self):
+        item, client = make_item()
+        result = run(item.update())
+        assert result is None
+        client.update_item.assert_not_called()
+
+    def test_proceeds_with_no_dirty_fields_but_atomic_ops(self):
+        """update() must not short-circuit when only atomic ops are present."""
+        item, client = make_item()
+        run(item.update(number_add={"count": 1}))
+        client.update_item.assert_called_once()
+
+    def test_add_clause_present_for_number_add(self):
+        item, client = make_item()
+        run(item.update(number_add={"count": 3}))
+        kw = call_kwargs(client)
+        assert "ADD" in kw["UpdateExpression"]
+
+    def test_set_and_remove_and_add_in_one_expression(self):
+        item, client = make_item()
+        run(item.update(
+            list_append={"keys": ["d"]},   # SET
+            list_remove={"keys": 0},       # REMOVE
+            number_add={"count": 1},       # ADD
+        ))
+        kw = call_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert "SET" in expr
+        assert "REMOVE" in expr
+        assert "ADD" in expr
