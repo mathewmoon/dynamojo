@@ -417,8 +417,8 @@ class TestUpdateWithAtomicOps:
         run(item.update(
             list_remove={"keys": 0},
             list_append={"keys": ["d"]},
-            dict_remove={"metadata": "x"},
-            dict_set={"metadata": {"z": "test"}},
+            dict_remove=["metadata.x"],
+            dict_set={"metadata.z": "test"},
         ))
         assert client.update_item.call_count == 1
         kw = call_kwargs(client)
@@ -433,7 +433,7 @@ class TestUpdateWithAtomicOps:
         run(item.update(
             list_append={"keys": ["d"]},
             number_add={"count": 2},
-            dict_set={"metadata": {"z": "val"}},
+            dict_set={"metadata.z": "val"},
         ))
         assert item.keys == ["a", "b", "c", "d"]
         assert item.count == 7

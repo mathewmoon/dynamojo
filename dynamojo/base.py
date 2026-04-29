@@ -643,8 +643,8 @@ class DynamojoBase(BaseModel, ABC):
         list_remove: dict[str, int] | None = None,
         list_set: dict[str, tuple[int, Any]] | None = None,
         number_add: dict[str, int | float] | None = None,
-        dict_set: dict[str, dict] | None = None,
-        dict_remove: dict[str, str] | None = None,
+        dict_set: dict[str, Any] | None = None,
+        dict_remove: list[str] | None = None,
         set_if_not_exists: dict[str, Any] | None = None,
         **opts,
     ):
@@ -654,8 +654,8 @@ class DynamojoBase(BaseModel, ABC):
             + list(list_remove or {})
             + list(list_set or {})
             + list(number_add or {})
-            + list(dict_set or {})
-            + list(dict_remove or {})
+            + [fp.partition(".")[0] for fp in (dict_set or {})]
+            + [fp.partition(".")[0] for fp in (dict_remove or [])]
             + list(set_if_not_exists or {})
         )
 
@@ -713,17 +713,26 @@ class DynamojoBase(BaseModel, ABC):
             )
             add_statement_items.append(f"#{field} :_na_{field}")
 
-        # dict_set — dot-separated path, arbitrary depth
-        for field, mapping in (dict_set or {}).items():
-            for path, v in mapping.items():
-                names, expr_path = _dict_path_names(field, path)
-                vk = f":_ds_{field}__{path.replace('.', '__')}"
-                attribute_names.update(names)
-                attribute_values[vk] = v
-                set_statement_items.append(f"{expr_path} = {vk}")
+        # dict_set — flat "field.path" keys, value written at terminus
+        for full_path, v in (dict_set or {}).items():
+            field, _, path = full_path.partition(".")
+            if not path:
+                raise ValueError(
+                    f"dict_set key '{full_path}' must include a dot-separated path, e.g. 'field.key'"
+                )
+            names, expr_path = _dict_path_names(field, path)
+            vk = f":_ds_{full_path.replace('.', '__')}"
+            attribute_names.update(names)
+            attribute_values[vk] = v
+            set_statement_items.append(f"{expr_path} = {vk}")
 
-        # dict_remove — dot-separated path, arbitrary depth
-        for field, path in (dict_remove or {}).items():
+        # dict_remove — list of flat "field.path" strings
+        for full_path in (dict_remove or []):
+            field, _, path = full_path.partition(".")
+            if not path:
+                raise ValueError(
+                    f"dict_remove path '{full_path}' must include a dot-separated path, e.g. 'field.key'"
+                )
             names, expr_path = _dict_path_names(field, path)
             attribute_names.update(names)
             del_statement_items.append(expr_path)
@@ -773,8 +782,8 @@ class DynamojoBase(BaseModel, ABC):
         list_remove: dict[str, int] | None = None,
         list_set: dict[str, tuple[int, Any]] | None = None,
         number_add: dict[str, int | float] | None = None,
-        dict_set: dict[str, dict] | None = None,
-        dict_remove: dict[str, str] | None = None,
+        dict_set: dict[str, Any] | None = None,
+        dict_remove: list[str] | None = None,
         set_if_not_exists: dict[str, Any] | None = None,
         **opts,
     ):
@@ -822,14 +831,23 @@ class DynamojoBase(BaseModel, ABC):
             self._sync_field(field, new)
         for field, delta in (number_add or {}).items():
             self._sync_field(field, getattr(self, field) + delta)
-        for field, mapping in (dict_set or {}).items():
+        _ds_by_field: dict[str, dict] = {}
+        for full_path, value in (dict_set or {}).items():
+            field, _, path = full_path.partition(".")
+            _ds_by_field.setdefault(field, {})[path] = value
+        for field, paths in _ds_by_field.items():
             new_val = deepcopy(getattr(self, field))
-            for path, value in mapping.items():
+            for path, value in paths.items():
                 _deep_set(new_val, path.split("."), value)
             self._sync_field(field, new_val)
-        for field, path in (dict_remove or {}).items():
+        _dr_by_field: dict[str, list] = {}
+        for full_path in (dict_remove or []):
+            field, _, path = full_path.partition(".")
+            _dr_by_field.setdefault(field, []).append(path)
+        for field, paths in _dr_by_field.items():
             new_val = deepcopy(getattr(self, field))
-            _deep_remove(new_val, path.split("."))
+            for path in paths:
+                _deep_remove(new_val, path.split("."))
             self._sync_field(field, new_val)
         for field, value in (set_if_not_exists or {}).items():
             self._sync_field(field, value)
