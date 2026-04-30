@@ -635,6 +635,25 @@ class DynamojoBase(BaseModel, ABC):
         return self._config().dynamo_client.put_item(**opts)
 
     @classmethod
+    def _resolve_alias_targets(cls, field: str) -> list[str]:
+        """Translate a logical field name into the attribute names to write.
+
+        If `field` is registered as an IndexMap alias (i.e., it appears as a
+        value in `_index_aliases`), the underlying index attribute name(s) are
+        returned — plus the alias itself when `store_aliases` is True, so the
+        alias and its backing index key stay in sync. Non-aliased fields are
+        returned as-is. Multiple GSIs aliasing the same logical field expand
+        to a target per GSI.
+        """
+        aliases = cls._config()._index_aliases  # {index_key_name: alias_name}
+        targets = [key for key, alias in aliases.items() if alias == field]
+        if not targets:
+            return [field]
+        if cls._config().store_aliases:
+            targets.append(field)
+        return targets
+
+    @classmethod
     def _build_atomic_update_clauses(
         cls,
         set: dict[str, Any] | None = None,
@@ -652,6 +671,10 @@ class DynamojoBase(BaseModel, ABC):
         Returns (attribute_names, attribute_values, set_items, del_items, add_items).
         Values are NOT yet serialized — caller is responsible for serializing
         attribute_values via TYPE_SERIALIZER before handing them to boto3.
+
+        Each user-supplied field name is run through `_resolve_alias_targets`,
+        so aliased GSI/LSI keys propagate to all of their underlying index
+        attributes automatically.
         """
         attribute_names: dict[str, str] = {}
         attribute_values: dict[str, Any] = {}
@@ -661,40 +684,46 @@ class DynamojoBase(BaseModel, ABC):
 
         # `set` — plain top-level field assignment ("SET #f = :_set_f")
         for field, value in (set or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_set_{field}"] = (
-                Decimal(str(value)) if isinstance(value, float) else value
-            )
-            set_items.append(f"#{field} = :_set_{field}")
+            coerced = Decimal(str(value)) if isinstance(value, float) else value
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_set_{target}"] = coerced
+                set_items.append(f"#{target} = :_set_{target}")
 
         for field, values in (list_append or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_la_{field}"] = list(values)
-            set_items.append(f"#{field} = list_append(#{field}, :_la_{field})")
+            vals = list(values)
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_la_{target}"] = vals
+                set_items.append(f"#{target} = list_append(#{target}, :_la_{target})")
 
         for field, values in (list_prepend or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_lp_{field}"] = list(values)
-            set_items.append(f"#{field} = list_append(:_lp_{field}, #{field})")
+            vals = list(values)
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_lp_{target}"] = vals
+                set_items.append(f"#{target} = list_append(:_lp_{target}, #{target})")
 
         # list_remove — index embedded in path, no value placeholder
         for field, index in (list_remove or {}).items():
-            attribute_names[f"#{field}"] = field
-            del_items.append(f"#{field}[{index}]")
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                del_items.append(f"#{target}[{index}]")
 
         # list_set — index embedded in path
         for field, (index, value) in (list_set or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_ls_{field}"] = value
-            set_items.append(f"#{field}[{index}] = :_ls_{field}")
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_ls_{target}"] = value
+                set_items.append(f"#{target}[{index}] = :_ls_{target}")
 
         # number_add — goes in ADD clause; convert float → Decimal for the serializer
         for field, delta in (number_add or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_na_{field}"] = (
-                Decimal(str(delta)) if isinstance(delta, float) else delta
-            )
-            add_items.append(f"#{field} :_na_{field}")
+            coerced = Decimal(str(delta)) if isinstance(delta, float) else delta
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_na_{target}"] = coerced
+                add_items.append(f"#{target} :_na_{target}")
 
         # dict_set — flat "field.path" keys, value written at terminus
         for full_path, v in (dict_set or {}).items():
@@ -703,11 +732,12 @@ class DynamojoBase(BaseModel, ABC):
                 raise ValueError(
                     f"dict_set key '{full_path}' must include a dot-separated path, e.g. 'field.key'"
                 )
-            names, expr_path = _dict_path_names(field, path)
-            vk = f":_ds_{full_path.replace('.', '__')}"
-            attribute_names.update(names)
-            attribute_values[vk] = v
-            set_items.append(f"{expr_path} = {vk}")
+            for target in cls._resolve_alias_targets(field):
+                names, expr_path = _dict_path_names(target, path)
+                vk = f":_ds_{target}__{path.replace('.', '__')}"
+                attribute_names.update(names)
+                attribute_values[vk] = v
+                set_items.append(f"{expr_path} = {vk}")
 
         # dict_remove — list of flat "field.path" strings
         for full_path in (dict_remove or []):
@@ -716,14 +746,16 @@ class DynamojoBase(BaseModel, ABC):
                 raise ValueError(
                     f"dict_remove path '{full_path}' must include a dot-separated path, e.g. 'field.key'"
                 )
-            names, expr_path = _dict_path_names(field, path)
-            attribute_names.update(names)
-            del_items.append(expr_path)
+            for target in cls._resolve_alias_targets(field):
+                names, expr_path = _dict_path_names(target, path)
+                attribute_names.update(names)
+                del_items.append(expr_path)
 
         for field, value in (set_if_not_exists or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_ine_{field}"] = value
-            set_items.append(f"#{field} = if_not_exists(#{field}, :_ine_{field})")
+            for target in cls._resolve_alias_targets(field):
+                attribute_names[f"#{target}"] = target
+                attribute_values[f":_ine_{target}"] = value
+                set_items.append(f"#{target} = if_not_exists(#{target}, :_ine_{target})")
 
         return attribute_names, attribute_values, set_items, del_items, add_items
 
