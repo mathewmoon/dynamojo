@@ -634,6 +634,90 @@ class DynamojoBase(BaseModel, ABC):
         )
         return self._config().dynamo_client.put_item(**opts)
 
+    @classmethod
+    def _build_atomic_update_clauses(
+        cls,
+        list_append: dict[str, list] | None = None,
+        list_prepend: dict[str, list] | None = None,
+        list_remove: dict[str, int] | None = None,
+        list_set: dict[str, tuple[int, Any]] | None = None,
+        number_add: dict[str, int | float] | None = None,
+        dict_set: dict[str, Any] | None = None,
+        dict_remove: list[str] | None = None,
+        set_if_not_exists: dict[str, Any] | None = None,
+    ) -> tuple[dict, dict, list[str], list[str], list[str]]:
+        """Build expression fragments for the atomic-op kwargs.
+
+        Returns (attribute_names, attribute_values, set_items, del_items, add_items).
+        Values are NOT yet serialized — caller is responsible for serializing
+        attribute_values via TYPE_SERIALIZER before handing them to boto3.
+        """
+        attribute_names: dict[str, str] = {}
+        attribute_values: dict[str, Any] = {}
+        set_items: list[str] = []
+        del_items: list[str] = []
+        add_items: list[str] = []
+
+        for field, values in (list_append or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_la_{field}"] = list(values)
+            set_items.append(f"#{field} = list_append(#{field}, :_la_{field})")
+
+        for field, values in (list_prepend or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_lp_{field}"] = list(values)
+            set_items.append(f"#{field} = list_append(:_lp_{field}, #{field})")
+
+        # list_remove — index embedded in path, no value placeholder
+        for field, index in (list_remove or {}).items():
+            attribute_names[f"#{field}"] = field
+            del_items.append(f"#{field}[{index}]")
+
+        # list_set — index embedded in path
+        for field, (index, value) in (list_set or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_ls_{field}"] = value
+            set_items.append(f"#{field}[{index}] = :_ls_{field}")
+
+        # number_add — goes in ADD clause; convert float → Decimal for the serializer
+        for field, delta in (number_add or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_na_{field}"] = (
+                Decimal(str(delta)) if isinstance(delta, float) else delta
+            )
+            add_items.append(f"#{field} :_na_{field}")
+
+        # dict_set — flat "field.path" keys, value written at terminus
+        for full_path, v in (dict_set or {}).items():
+            field, _, path = full_path.partition(".")
+            if not path:
+                raise ValueError(
+                    f"dict_set key '{full_path}' must include a dot-separated path, e.g. 'field.key'"
+                )
+            names, expr_path = _dict_path_names(field, path)
+            vk = f":_ds_{full_path.replace('.', '__')}"
+            attribute_names.update(names)
+            attribute_values[vk] = v
+            set_items.append(f"{expr_path} = {vk}")
+
+        # dict_remove — list of flat "field.path" strings
+        for full_path in (dict_remove or []):
+            field, _, path = full_path.partition(".")
+            if not path:
+                raise ValueError(
+                    f"dict_remove path '{full_path}' must include a dot-separated path, e.g. 'field.key'"
+                )
+            names, expr_path = _dict_path_names(field, path)
+            attribute_names.update(names)
+            del_items.append(expr_path)
+
+        for field, value in (set_if_not_exists or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_ine_{field}"] = value
+            set_items.append(f"#{field} = if_not_exists(#{field}, :_ine_{field})")
+
+        return attribute_names, attribute_values, set_items, del_items, add_items
+
     def make_update_opts(
         self,
         pk_name: str = "pk",
@@ -660,12 +744,24 @@ class DynamojoBase(BaseModel, ABC):
         )
 
         diff = self._diff
-        attribute_names = {}
-        attribute_values = {}
-        set_statement_items = []
-        del_statement_items = []
-        add_statement_items = []
         set_items = {**diff.added, **diff.changed}
+
+        (
+            attribute_names,
+            attribute_values,
+            set_statement_items,
+            del_statement_items,
+            add_statement_items,
+        ) = self._build_atomic_update_clauses(
+            list_append=list_append,
+            list_prepend=list_prepend,
+            list_remove=list_remove,
+            list_set=list_set,
+            number_add=number_add,
+            dict_set=dict_set,
+            dict_remove=dict_remove,
+            set_if_not_exists=set_if_not_exists,
+        )
 
         # diff-based SET/REMOVE — skip fields covered by an atomic op
         for attr, val in self._db_item().items():
@@ -677,73 +773,6 @@ class DynamojoBase(BaseModel, ABC):
                     set_statement_items.append(statement)
                 else:
                     del_statement_items.append(statement)
-
-        # list_append
-        for field, values in (list_append or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_la_{field}"] = list(values)
-            set_statement_items.append(
-                f"#{field} = list_append(#{field}, :_la_{field})"
-            )
-
-        # list_prepend
-        for field, values in (list_prepend or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_lp_{field}"] = list(values)
-            set_statement_items.append(
-                f"#{field} = list_append(:_lp_{field}, #{field})"
-            )
-
-        # list_remove — index embedded in path, no value placeholder
-        for field, index in (list_remove or {}).items():
-            attribute_names[f"#{field}"] = field
-            del_statement_items.append(f"#{field}[{index}]")
-
-        # list_set — index embedded in path
-        for field, (index, value) in (list_set or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_ls_{field}"] = value
-            set_statement_items.append(f"#{field}[{index}] = :_ls_{field}")
-
-        # number_add — goes in ADD clause; convert float → Decimal for the serializer
-        for field, delta in (number_add or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_na_{field}"] = (
-                Decimal(str(delta)) if isinstance(delta, float) else delta
-            )
-            add_statement_items.append(f"#{field} :_na_{field}")
-
-        # dict_set — flat "field.path" keys, value written at terminus
-        for full_path, v in (dict_set or {}).items():
-            field, _, path = full_path.partition(".")
-            if not path:
-                raise ValueError(
-                    f"dict_set key '{full_path}' must include a dot-separated path, e.g. 'field.key'"
-                )
-            names, expr_path = _dict_path_names(field, path)
-            vk = f":_ds_{full_path.replace('.', '__')}"
-            attribute_names.update(names)
-            attribute_values[vk] = v
-            set_statement_items.append(f"{expr_path} = {vk}")
-
-        # dict_remove — list of flat "field.path" strings
-        for full_path in (dict_remove or []):
-            field, _, path = full_path.partition(".")
-            if not path:
-                raise ValueError(
-                    f"dict_remove path '{full_path}' must include a dot-separated path, e.g. 'field.key'"
-                )
-            names, expr_path = _dict_path_names(field, path)
-            attribute_names.update(names)
-            del_statement_items.append(expr_path)
-
-        # set_if_not_exists
-        for field, value in (set_if_not_exists or {}).items():
-            attribute_names[f"#{field}"] = field
-            attribute_values[f":_ine_{field}"] = value
-            set_statement_items.append(
-                f"#{field} = if_not_exists(#{field}, :_ine_{field})"
-            )
 
         clauses = filter(None, [
             f"SET {', '.join(set_statement_items)}" if set_statement_items else "",
@@ -774,6 +803,110 @@ class DynamojoBase(BaseModel, ABC):
             opts["ConditionExpression"] = exp["ConditionExpression"]
 
         return opts
+
+    @classmethod
+    async def update_by_key(
+        cls,
+        pk: Any,
+        sk: Any = None,
+        *,
+        list_append: dict[str, list] | None = None,
+        list_prepend: dict[str, list] | None = None,
+        list_remove: dict[str, int] | None = None,
+        list_set: dict[str, tuple[int, Any]] | None = None,
+        number_add: dict[str, int | float] | None = None,
+        dict_set: dict[str, Any] | None = None,
+        dict_remove: list[str] | None = None,
+        set_if_not_exists: dict[str, Any] | None = None,
+        ConditionExpression: ConditionBase | None = None,
+        **opts,
+    ) -> dict:
+        """Issue a true DynamoDB UpdateItem identified by primary key.
+
+        No upfront GetItem and no instance state — useful for stream handlers
+        and conditionally-guarded mutations where only the key is in hand.
+        At least one atomic-op kwarg must be supplied.
+        """
+        if not any([
+            list_append, list_prepend, list_remove, list_set,
+            number_add, dict_set, dict_remove, set_if_not_exists,
+        ]):
+            raise ValueError(
+                "update_by_key requires at least one atomic-op kwarg "
+                "(list_append, list_prepend, list_remove, list_set, "
+                "number_add, dict_set, dict_remove, set_if_not_exists)"
+            )
+
+        (
+            attribute_names,
+            attribute_values,
+            set_items,
+            del_items,
+            add_items,
+        ) = cls._build_atomic_update_clauses(
+            list_append=list_append,
+            list_prepend=list_prepend,
+            list_remove=list_remove,
+            list_set=list_set,
+            number_add=number_add,
+            dict_set=dict_set,
+            dict_remove=dict_remove,
+            set_if_not_exists=set_if_not_exists,
+        )
+
+        clauses = filter(None, [
+            f"SET {', '.join(set_items)}" if set_items else "",
+            f"REMOVE {', '.join(del_items)}" if del_items else "",
+            f"ADD {', '.join(add_items)}" if add_items else "",
+        ])
+
+        opts["TableName"] = cls._config().table
+        opts["Key"] = cls._build_key_from_args(pk, sk)
+        opts["UpdateExpression"] = " ".join(clauses)
+        opts["ExpressionAttributeNames"] = attribute_names
+
+        if attribute_values:
+            opts["ExpressionAttributeValues"] = {
+                k: TYPE_SERIALIZER.serialize(v) for k, v in attribute_values.items()
+            }
+
+        if ConditionExpression is not None:
+            exp = cls._get_raw_condition_expression(
+                exp=ConditionExpression,
+                expression_type="ConditionExpression",
+            )
+            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
+            opts.setdefault("ExpressionAttributeValues", {}).update(
+                exp["ExpressionAttributeValues"]
+            )
+            opts["ConditionExpression"] = exp["ConditionExpression"]
+
+        return cls._config().dynamo_client.update_item(**opts)
+
+    @classmethod
+    async def delete_by_key(
+        cls,
+        pk: Any,
+        sk: Any = None,
+        *,
+        ConditionExpression: ConditionBase | None = None,
+        **opts,
+    ) -> dict:
+        """Issue a true DynamoDB DeleteItem identified by primary key.
+
+        No upfront GetItem and no instance state.
+        """
+        opts["TableName"] = cls._config().table
+        opts["Key"] = cls._build_key_from_args(pk, sk)
+
+        if ConditionExpression is not None:
+            exp = cls._get_raw_condition_expression(
+                exp=ConditionExpression,
+                expression_type="ConditionExpression",
+            )
+            opts.update(exp)
+
+        return cls._config().dynamo_client.delete_item(**opts)
 
     async def update(
         self,
@@ -895,6 +1028,29 @@ class DynamojoBase(BaseModel, ABC):
         key = {pk_name: TYPE_SERIALIZER.serialize(self._db_item()[pk_name])}
         if sk_name is not None:
             key[sk_name] = TYPE_SERIALIZER.serialize(self._db_item()[sk_name])
+        return key
+
+    @classmethod
+    def _build_key_from_args(cls, pk: Any, sk: Any = None) -> dict:
+        """Serialize an explicit (pk, sk) into a DynamoDB Key dict.
+
+        Validates that sk is supplied iff the table is composite.
+        """
+        pk_name = cls._config().indexes.table.partitionkey
+        sk_name = cls._config().indexes.table.sortkey
+        key = {pk_name: TYPE_SERIALIZER.serialize(pk)}
+        if sk_name is not None:
+            if sk is None:
+                raise ValueError(
+                    f"Table '{cls._config().table}' has sort key '{sk_name}'; "
+                    "sk argument is required"
+                )
+            key[sk_name] = TYPE_SERIALIZER.serialize(sk)
+        elif sk is not None:
+            raise ValueError(
+                f"Table '{cls._config().table}' has no sort key; "
+                "sk argument must be omitted"
+            )
         return key
 
     def _atomic_update(
