@@ -90,11 +90,20 @@ class TestUpdateByKeyBasics:
         kw = update_kwargs(client)
         assert kw["Key"] == {"PK": {"S": "eid-1"}, "SK": {"S": "sk-1"}}
 
-    def test_requires_at_least_one_atomic_op(self):
+    def test_requires_at_least_one_update_kwarg(self):
         Model, client = make_composite_model()
-        with pytest.raises(ValueError, match="at least one atomic-op kwarg"):
+        with pytest.raises(ValueError, match="at least one update-producing kwarg"):
             run(Model.update_by_key("eid-1", "sk-1"))
         client.update_item.assert_not_called()
+
+    def test_condition_only_still_rejected(self):
+        """ConditionExpression alone is not a valid UpdateItem — must have an action."""
+        Model, _ = make_composite_model()
+        with pytest.raises(ValueError, match="at least one update-producing kwarg"):
+            run(Model.update_by_key(
+                "eid-1", "sk-1",
+                ConditionExpression=Attr("name").eq("Alice"),
+            ))
 
     def test_passthrough_opts(self):
         Model, client = make_composite_model()
@@ -208,6 +217,70 @@ class TestUpdateByKeyComposite:
             dict_set={"metadata.x": 99},
         ))
         assert client.update_item.call_count == 1
+
+
+class TestUpdateByKeySetKwarg:
+    """Plain top-level SET via the `set` kwarg.
+
+    The kwarg name shadows Python's builtin `set` — that's intentional;
+    matches how DynamoDB's UpdateExpression syntax names the action.
+    """
+
+    def test_set_emits_plain_set_clause(self):
+        Model, client = make_composite_model()
+        run(Model.update_by_key("eid-1", "sk-1", set={"name": "Bob"}))
+        kw = update_kwargs(client)
+        assert kw["UpdateExpression"].strip() == "SET #name = :_set_name"
+        assert kw["ExpressionAttributeNames"]["#name"] == "name"
+        assert kw["ExpressionAttributeValues"][":_set_name"] == {"S": "Bob"}
+
+    def test_set_with_multiple_fields(self):
+        """The motivating shape: set_active_step_for(no follow-up)."""
+        Model, client = make_composite_model()
+        run(Model.update_by_key(
+            "eid-1", "sk-1",
+            set={"name": "Bob", "count": 99},
+        ))
+        kw = update_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert expr.startswith("SET ")
+        assert "#name = :_set_name" in expr
+        assert "#count = :_set_count" in expr
+
+    def test_set_with_float_uses_decimal(self):
+        Model, client = make_composite_model()
+        run(Model.update_by_key("eid-1", "sk-1", set={"score": 1.5}))
+        kw = update_kwargs(client)
+        assert kw["ExpressionAttributeValues"][":_set_score"] == {"N": "1.5"}
+
+    def test_set_combined_with_number_add(self):
+        """set_active_step_for(increment_follow_up=True) — SET + ADD in one call."""
+        Model, client = make_composite_model()
+        run(Model.update_by_key(
+            "eid-1", "sk-1",
+            set={"name": "Bob", "count": 0},
+            number_add={"score": 1},
+        ))
+        kw = update_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert "SET" in expr and "ADD" in expr
+        assert "#name = :_set_name" in expr
+        assert "#count = :_set_count" in expr
+        assert "ADD #score :_na_score" in expr
+
+    def test_set_with_condition_expression(self):
+        """extend_ttl shape: SET ttl, updated_at WHERE status IN (...)."""
+        Model, client = make_composite_model()
+        run(Model.update_by_key(
+            "eid-1", "sk-1",
+            set={"count": 100, "name": "active"},
+            ConditionExpression=Attr("name").is_in(["CREATING", "ACTIVE"]),
+        ))
+        kw = update_kwargs(client)
+        assert "ConditionExpression" in kw
+        assert "#count = :_set_count" in kw["UpdateExpression"]
+        # both atomic SET values and condition values present
+        assert ":_set_count" in kw["ExpressionAttributeValues"]
 
 
 class TestUpdateByKeyConditionExpression:

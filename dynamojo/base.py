@@ -637,6 +637,7 @@ class DynamojoBase(BaseModel, ABC):
     @classmethod
     def _build_atomic_update_clauses(
         cls,
+        set: dict[str, Any] | None = None,
         list_append: dict[str, list] | None = None,
         list_prepend: dict[str, list] | None = None,
         list_remove: dict[str, int] | None = None,
@@ -657,6 +658,14 @@ class DynamojoBase(BaseModel, ABC):
         set_items: list[str] = []
         del_items: list[str] = []
         add_items: list[str] = []
+
+        # `set` — plain top-level field assignment ("SET #f = :_set_f")
+        for field, value in (set or {}).items():
+            attribute_names[f"#{field}"] = field
+            attribute_values[f":_set_{field}"] = (
+                Decimal(str(value)) if isinstance(value, float) else value
+            )
+            set_items.append(f"#{field} = :_set_{field}")
 
         for field, values in (list_append or {}).items():
             attribute_names[f"#{field}"] = field
@@ -722,6 +731,7 @@ class DynamojoBase(BaseModel, ABC):
         self,
         pk_name: str = "pk",
         sk_name: str = "sk",
+        set: dict[str, Any] | None = None,
         list_append: dict[str, list] | None = None,
         list_prepend: dict[str, list] | None = None,
         list_remove: dict[str, int] | None = None,
@@ -732,8 +742,12 @@ class DynamojoBase(BaseModel, ABC):
         set_if_not_exists: dict[str, Any] | None = None,
         **opts,
     ):
-        atomic_fields = set(
-            list(list_append or {})
+        # NOTE: `set` shadows the built-in inside this function — use the
+        # builtins module if a real set() is ever needed below.
+        import builtins
+        atomic_fields = builtins.set(
+            list(set or {})
+            + list(list_append or {})
             + list(list_prepend or {})
             + list(list_remove or {})
             + list(list_set or {})
@@ -744,7 +758,7 @@ class DynamojoBase(BaseModel, ABC):
         )
 
         diff = self._diff
-        set_items = {**diff.added, **diff.changed}
+        diff_set_items = {**diff.added, **diff.changed}
 
         (
             attribute_names,
@@ -753,6 +767,7 @@ class DynamojoBase(BaseModel, ABC):
             del_statement_items,
             add_statement_items,
         ) = self._build_atomic_update_clauses(
+            set=set,
             list_append=list_append,
             list_prepend=list_prepend,
             list_remove=list_remove,
@@ -768,7 +783,7 @@ class DynamojoBase(BaseModel, ABC):
             if attr in diff.keys and attr not in atomic_fields:
                 attribute_names[f"#{attr}"] = attr
                 attribute_values[f":{attr}"] = val
-                if attr in set_items.keys():
+                if attr in diff_set_items.keys():
                     statement = f"#{attr} = :{attr}"
                     set_statement_items.append(statement)
                 else:
@@ -810,6 +825,7 @@ class DynamojoBase(BaseModel, ABC):
         pk: Any,
         sk: Any = None,
         *,
+        set: dict[str, Any] | None = None,
         list_append: dict[str, list] | None = None,
         list_prepend: dict[str, list] | None = None,
         list_remove: dict[str, int] | None = None,
@@ -825,15 +841,16 @@ class DynamojoBase(BaseModel, ABC):
 
         No upfront GetItem and no instance state — useful for stream handlers
         and conditionally-guarded mutations where only the key is in hand.
-        At least one atomic-op kwarg must be supplied.
+        At least one update-producing kwarg must be supplied (`set` or any of
+        the atomic ops); a ConditionExpression alone is not a valid UpdateItem.
         """
         if not any([
-            list_append, list_prepend, list_remove, list_set,
+            set, list_append, list_prepend, list_remove, list_set,
             number_add, dict_set, dict_remove, set_if_not_exists,
         ]):
             raise ValueError(
-                "update_by_key requires at least one atomic-op kwarg "
-                "(list_append, list_prepend, list_remove, list_set, "
+                "update_by_key requires at least one update-producing kwarg "
+                "(set, list_append, list_prepend, list_remove, list_set, "
                 "number_add, dict_set, dict_remove, set_if_not_exists)"
             )
 
@@ -844,6 +861,7 @@ class DynamojoBase(BaseModel, ABC):
             del_items,
             add_items,
         ) = cls._build_atomic_update_clauses(
+            set=set,
             list_append=list_append,
             list_prepend=list_prepend,
             list_remove=list_remove,
@@ -910,6 +928,7 @@ class DynamojoBase(BaseModel, ABC):
 
     async def update(
         self,
+        set: dict[str, Any] | None = None,
         list_append: dict[str, list] | None = None,
         list_prepend: dict[str, list] | None = None,
         list_remove: dict[str, int] | None = None,
@@ -921,7 +940,7 @@ class DynamojoBase(BaseModel, ABC):
         **opts,
     ):
         has_atomic = any([
-            list_append, list_prepend, list_remove, list_set,
+            set, list_append, list_prepend, list_remove, list_set,
             number_add, dict_set, dict_remove, set_if_not_exists,
         ])
         diff = self._diff
@@ -938,6 +957,7 @@ class DynamojoBase(BaseModel, ABC):
         opts = self.make_update_opts(
             pk_name=pk_name,
             sk_name=sk_name,
+            set=set,
             list_append=list_append,
             list_prepend=list_prepend,
             list_remove=list_remove,
@@ -950,6 +970,8 @@ class DynamojoBase(BaseModel, ABC):
         )
         self._config().dynamo_client.update_item(**opts)
 
+        for field, value in (set or {}).items():
+            self._sync_field(field, value)
         for field, values in (list_append or {}).items():
             self._sync_field(field, list(getattr(self, field)) + list(values))
         for field, values in (list_prepend or {}).items():

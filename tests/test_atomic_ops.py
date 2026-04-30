@@ -494,3 +494,54 @@ class TestUpdateWithAtomicOps:
         assert "SET" in expr
         assert "REMOVE" in expr
         assert "ADD" in expr
+
+
+# ---------------------------------------------------------------------------
+# update() with the explicit `set` kwarg
+# ---------------------------------------------------------------------------
+
+class TestUpdateWithSetKwarg:
+    def test_set_emits_plain_set_clause(self):
+        item, client = make_item()
+        run(item.update(set={"name": "Bob"}))
+        kw = call_kwargs(client)
+        assert "#name = :_set_name" in kw["UpdateExpression"]
+        assert kw["ExpressionAttributeValues"][":_set_name"] == {"S": "Bob"}
+
+    def test_set_syncs_local_state(self):
+        item, _ = make_item()
+        run(item.update(set={"name": "Bob"}))
+        assert item.name == "Bob"
+        assert "name" not in item._diff.keys
+
+    def test_set_wins_over_diff(self):
+        """If a field is dirty AND in `set`, the explicit SET should win."""
+        item, client = make_item()
+        item.name = "Carol"  # dirty via setattr
+        run(item.update(set={"name": "Bob"}))  # explicit override
+        kw = call_kwargs(client)
+        # Only the :_set_name placeholder, not the diff-based :name
+        assert ":_set_name" in kw["ExpressionAttributeValues"]
+        assert ":name" not in kw["ExpressionAttributeValues"]
+        assert item.name == "Bob"
+
+    def test_set_combined_with_number_add(self):
+        item, client = make_item()
+        run(item.update(set={"name": "Bob"}, number_add={"count": 1}))
+        kw = call_kwargs(client)
+        expr = kw["UpdateExpression"]
+        assert "SET" in expr and "ADD" in expr
+        assert "#name = :_set_name" in expr
+        assert "ADD #count :_na_count" in expr
+        assert item.name == "Bob"
+        assert item.count == 6
+
+    def test_set_with_diff_on_other_field(self):
+        item, client = make_item()
+        item.count = 42  # dirty (integer to avoid the diff path's float→Decimal gap)
+        run(item.update(set={"name": "Bob"}))
+        kw = call_kwargs(client)
+        # Both SETs should be present: explicit `set` AND diff-based count
+        expr = kw["UpdateExpression"]
+        assert "#name = :_set_name" in expr
+        assert "#count = :count" in expr
