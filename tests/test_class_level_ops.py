@@ -9,7 +9,6 @@ from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig
 from dynamojo.index import IndexList, IndexMap, TableIndex
 
-
 # ---------------------------------------------------------------------------
 # Composite-key model (PK + SK)
 # ---------------------------------------------------------------------------
@@ -26,7 +25,9 @@ def make_composite_model():
     config = DynamojoConfig(
         indexes=_composite_indexes,
         index_maps=[
-            IndexMap(index=_composite_index, partitionkey="entity_id", sortkey="sort_key")
+            IndexMap(
+                index=_composite_index, partitionkey="entity_id", sortkey="sort_key"
+            )
         ],
         joined_attributes=[],
         table="test-table",
@@ -100,18 +101,24 @@ class TestUpdateByKeyBasics:
         """ConditionExpression alone is not a valid UpdateItem — must have an action."""
         Model, _ = make_composite_model()
         with pytest.raises(ValueError, match="at least one update-producing kwarg"):
-            run(Model.update_by_key(
-                "eid-1", "sk-1",
-                ConditionExpression=Attr("name").eq("Alice"),
-            ))
+            run(
+                Model.update_by_key(
+                    "eid-1",
+                    "sk-1",
+                    ConditionExpression=Attr("name").eq("Alice"),
+                )
+            )
 
     def test_passthrough_opts(self):
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            number_add={"count": 1},
-            ReturnValues="ALL_NEW",
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                number_add={"count": 1},
+                ReturnValues="ALL_NEW",
+            )
+        )
         assert update_kwargs(client)["ReturnValues"] == "ALL_NEW"
 
 
@@ -197,12 +204,15 @@ class TestUpdateByKeyOps:
 class TestUpdateByKeyComposite:
     def test_set_remove_and_add_in_one_expression(self):
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            list_append={"keys": ["d"]},   # SET
-            list_remove={"keys": 0},        # REMOVE
-            number_add={"count": 1},        # ADD
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                list_append={"keys": ["d"]},  # SET
+                list_remove={"keys": 0},  # REMOVE
+                number_add={"count": 1},  # ADD
+            )
+        )
         expr = update_kwargs(client)["UpdateExpression"]
         assert "SET" in expr
         assert "REMOVE" in expr
@@ -210,12 +220,15 @@ class TestUpdateByKeyComposite:
 
     def test_single_round_trip(self):
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            list_append={"keys": ["d"]},
-            number_add={"count": 1},
-            dict_set={"metadata.x": 99},
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                list_append={"keys": ["d"]},
+                number_add={"count": 1},
+                dict_set={"metadata.x": 99},
+            )
+        )
         assert client.update_item.call_count == 1
 
 
@@ -237,10 +250,13 @@ class TestUpdateByKeySetKwarg:
     def test_set_with_multiple_fields(self):
         """The motivating shape: set_active_step_for(no follow-up)."""
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            set={"name": "Bob", "count": 99},
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"name": "Bob", "count": 99},
+            )
+        )
         kw = update_kwargs(client)
         expr = kw["UpdateExpression"]
         assert expr.startswith("SET ")
@@ -256,11 +272,14 @@ class TestUpdateByKeySetKwarg:
     def test_set_combined_with_number_add(self):
         """set_active_step_for(increment_follow_up=True) — SET + ADD in one call."""
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            set={"name": "Bob", "count": 0},
-            number_add={"score": 1},
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"name": "Bob", "count": 0},
+                number_add={"score": 1},
+            )
+        )
         kw = update_kwargs(client)
         expr = kw["UpdateExpression"]
         assert "SET" in expr and "ADD" in expr
@@ -271,11 +290,14 @@ class TestUpdateByKeySetKwarg:
     def test_set_with_condition_expression(self):
         """extend_ttl shape: SET ttl, updated_at WHERE status IN (...)."""
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            set={"count": 100, "name": "active"},
-            ConditionExpression=Attr("name").is_in(["CREATING", "ACTIVE"]),
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"count": 100, "name": "active"},
+                ConditionExpression=Attr("name").is_in(["CREATING", "ACTIVE"]),
+            )
+        )
         kw = update_kwargs(client)
         assert "ConditionExpression" in kw
         assert "#count = :_set_count" in kw["UpdateExpression"]
@@ -286,11 +308,14 @@ class TestUpdateByKeySetKwarg:
 class TestUpdateByKeyConditionExpression:
     def test_condition_merges(self):
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            number_add={"count": 1},
-            ConditionExpression=Attr("name").eq("Alice"),
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                number_add={"count": 1},
+                ConditionExpression=Attr("name").eq("Alice"),
+            )
+        )
         kw = update_kwargs(client)
         assert "ConditionExpression" in kw
         assert kw["ExpressionAttributeValues"]
@@ -300,21 +325,27 @@ class TestUpdateByKeyConditionExpression:
     def test_condition_with_in_clause(self):
         """Mirrors the Sandbox.extend_ttl shape: status IN (CREATING, ACTIVE)."""
         Model, client = make_composite_model()
-        run(Model.update_by_key(
-            "eid-1", "sk-1",
-            number_add={"count": 1},
-            ConditionExpression=Attr("name").is_in(["A", "B"]),
-        ))
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                number_add={"count": 1},
+                ConditionExpression=Attr("name").is_in(["A", "B"]),
+            )
+        )
         kw = update_kwargs(client)
         assert "ConditionExpression" in kw
 
     def test_condition_without_atomic_ops_still_requires_op(self):
         Model, _ = make_composite_model()
         with pytest.raises(ValueError):
-            run(Model.update_by_key(
-                "eid-1", "sk-1",
-                ConditionExpression=Attr("name").eq("Alice"),
-            ))
+            run(
+                Model.update_by_key(
+                    "eid-1",
+                    "sk-1",
+                    ConditionExpression=Attr("name").eq("Alice"),
+                )
+            )
 
 
 class TestUpdateByKeyKeyValidation:
@@ -357,10 +388,13 @@ class TestDeleteByKeyBasics:
 class TestDeleteByKeyConditionExpression:
     def test_condition_attached(self):
         Model, client = make_composite_model()
-        run(Model.delete_by_key(
-            "eid-1", "sk-1",
-            ConditionExpression=Attr("name").eq("Alice"),
-        ))
+        run(
+            Model.delete_by_key(
+                "eid-1",
+                "sk-1",
+                ConditionExpression=Attr("name").eq("Alice"),
+            )
+        )
         kw = delete_kwargs(client)
         assert "ConditionExpression" in kw
         assert "ExpressionAttributeNames" in kw

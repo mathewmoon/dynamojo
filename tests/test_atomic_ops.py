@@ -7,7 +7,6 @@ from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig, JoinedAttribute
 from dynamojo.index import IndexList, IndexMap, TableIndex
 
-
 _table_index = TableIndex(name="table", partitionkey="PK", sortkey="SK")
 _indexes = IndexList(_table_index)
 
@@ -62,6 +61,7 @@ def call_kwargs(mock_client):
 # list_append
 # ---------------------------------------------------------------------------
 
+
 class TestListAppend:
     def test_expression(self):
         item, client = make_item()
@@ -94,6 +94,7 @@ class TestListAppend:
 # list_prepend
 # ---------------------------------------------------------------------------
 
+
 class TestListPrepend:
     def test_expression(self):
         item, client = make_item()
@@ -115,6 +116,7 @@ class TestListPrepend:
 # ---------------------------------------------------------------------------
 # list_remove
 # ---------------------------------------------------------------------------
+
 
 class TestListRemove:
     def test_expression(self):
@@ -144,6 +146,7 @@ class TestListRemove:
 # list_set
 # ---------------------------------------------------------------------------
 
+
 class TestListSet:
     def test_expression(self):
         item, client = make_item()
@@ -167,6 +170,7 @@ class TestListSet:
 # number_add
 # ---------------------------------------------------------------------------
 
+
 class TestNumberAdd:
     def test_expression(self):
         item, client = make_item()
@@ -187,6 +191,7 @@ class TestNumberAdd:
 
     def test_float_field(self):
         from decimal import Decimal
+
         item, client = make_item()
         run(item.number_add("score", 0.5))
         # local state uses float arithmetic
@@ -205,13 +210,17 @@ class TestNumberAdd:
 # dict_set
 # ---------------------------------------------------------------------------
 
+
 class TestDictSet:
     def test_expression(self):
         item, client = make_item()
         run(item.dict_set("metadata", "z", "val"))
         kw = call_kwargs(client)
         assert kw["UpdateExpression"] == "SET #metadata.#metadata__z = :value"
-        assert kw["ExpressionAttributeNames"] == {"#metadata": "metadata", "#metadata__z": "z"}
+        assert kw["ExpressionAttributeNames"] == {
+            "#metadata": "metadata",
+            "#metadata__z": "z",
+        }
         assert ":value" in kw["ExpressionAttributeValues"]
 
     def test_local_state_adds_key(self):
@@ -233,7 +242,10 @@ class TestDictSet:
         item, client = make_item()
         run(item.dict_set("metadata", "a.b.c", "deep"))
         kw = call_kwargs(client)
-        assert kw["UpdateExpression"] == "SET #metadata.#metadata__a.#metadata__a__b.#metadata__a__b__c = :value"
+        assert (
+            kw["UpdateExpression"]
+            == "SET #metadata.#metadata__a.#metadata__a__b.#metadata__a__b__c = :value"
+        )
         assert kw["ExpressionAttributeNames"]["#metadata__a"] == "a"
         assert kw["ExpressionAttributeNames"]["#metadata__a__b"] == "b"
         assert kw["ExpressionAttributeNames"]["#metadata__a__b__c"] == "c"
@@ -248,13 +260,17 @@ class TestDictSet:
 # dict_remove
 # ---------------------------------------------------------------------------
 
+
 class TestDictRemove:
     def test_expression(self):
         item, client = make_item()
         run(item.dict_remove("metadata", "x"))
         kw = call_kwargs(client)
         assert kw["UpdateExpression"] == "REMOVE #metadata.#metadata__x"
-        assert kw["ExpressionAttributeNames"] == {"#metadata": "metadata", "#metadata__x": "x"}
+        assert kw["ExpressionAttributeNames"] == {
+            "#metadata": "metadata",
+            "#metadata__x": "x",
+        }
 
     def test_no_expression_attribute_values_without_condition(self):
         item, client = make_item()
@@ -276,7 +292,10 @@ class TestDictRemove:
         item, client = make_item()
         run(item.dict_remove("metadata", "x.nested"))
         kw = call_kwargs(client)
-        assert kw["UpdateExpression"] == "REMOVE #metadata.#metadata__x.#metadata__x__nested"
+        assert (
+            kw["UpdateExpression"]
+            == "REMOVE #metadata.#metadata__x.#metadata__x__nested"
+        )
         assert kw["ExpressionAttributeNames"]["#metadata__x"] == "x"
         assert kw["ExpressionAttributeNames"]["#metadata__x__nested"] == "nested"
 
@@ -290,6 +309,7 @@ class TestDictRemove:
 # ---------------------------------------------------------------------------
 # set_if_not_exists
 # ---------------------------------------------------------------------------
+
 
 class TestSetIfNotExists:
     def test_expression(self):
@@ -321,17 +341,24 @@ class TestSetIfNotExists:
 # ConditionExpression handling
 # ---------------------------------------------------------------------------
 
+
 class TestConditionExpression:
     def test_condition_merged_into_list_append(self):
         from boto3.dynamodb.conditions import Attr
+
         item, client = make_item()
-        run(item.list_append("keys", ["d"], ConditionExpression=Attr("name").eq("Alice")))
+        run(
+            item.list_append(
+                "keys", ["d"], ConditionExpression=Attr("name").eq("Alice")
+            )
+        )
         kw = call_kwargs(client)
         assert "ConditionExpression" in kw
         assert "ExpressionAttributeValues" in kw
 
     def test_list_remove_with_condition_includes_expression_attribute_values(self):
         from boto3.dynamodb.conditions import Attr
+
         item, client = make_item()
         run(item.list_remove("keys", 0, ConditionExpression=Attr("count").eq(5)))
         kw = call_kwargs(client)
@@ -340,6 +367,7 @@ class TestConditionExpression:
 
     def test_dict_remove_with_condition_includes_expression_attribute_values(self):
         from boto3.dynamodb.conditions import Attr
+
         item, client = make_item()
         run(item.dict_remove("metadata", "x", ConditionExpression=Attr("count").gt(0)))
         kw = call_kwargs(client)
@@ -350,6 +378,7 @@ class TestConditionExpression:
 # ---------------------------------------------------------------------------
 # Type validation
 # ---------------------------------------------------------------------------
+
 
 class TestValidation:
     def test_nonexistent_field_raises_attribute_error(self):
@@ -382,6 +411,7 @@ class TestValidation:
 # Diff isolation — only the operated field is synced
 # ---------------------------------------------------------------------------
 
+
 class TestDiffIsolation:
     def test_other_dirty_fields_preserved_after_list_append(self):
         item, _ = make_item()
@@ -410,31 +440,38 @@ class TestDiffIsolation:
 # update() with atomic kwargs — composite and mixed cases
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateWithAtomicOps:
     def test_all_four_ops_in_one_call(self):
         """The motivating example: four mutations, one update_item round-trip."""
         item, client = make_item()
-        run(item.update(
-            list_remove={"keys": 0},
-            list_append={"keys": ["d"]},
-            dict_remove=["metadata.x"],
-            dict_set={"metadata.z": "test"},
-        ))
+        run(
+            item.update(
+                list_remove={"keys": 0},
+                list_append={"keys": ["d"]},
+                dict_remove=["metadata.x"],
+                dict_set={"metadata.z": "test"},
+            )
+        )
         assert client.update_item.call_count == 1
         kw = call_kwargs(client)
         expr = kw["UpdateExpression"]
         assert "list_append" in expr
         assert "REMOVE" in expr
-        assert "#keys" in kw["ExpressionAttributeNames"].values() or \
-               "keys" in kw["ExpressionAttributeNames"].values()
+        assert (
+            "#keys" in kw["ExpressionAttributeNames"].values()
+            or "keys" in kw["ExpressionAttributeNames"].values()
+        )
 
     def test_composite_local_state(self):
         item, _ = make_item()
-        run(item.update(
-            list_append={"keys": ["d"]},
-            number_add={"count": 2},
-            dict_set={"metadata.z": "val"},
-        ))
+        run(
+            item.update(
+                list_append={"keys": ["d"]},
+                number_add={"count": 2},
+                dict_set={"metadata.z": "val"},
+            )
+        )
         assert item.keys == ["a", "b", "c", "d"]
         assert item.count == 7
         assert item.metadata["z"] == "val"
@@ -455,7 +492,7 @@ class TestUpdateWithAtomicOps:
     def test_atomic_field_suppressed_from_diff(self):
         """When a field is dirty AND in an atomic op, the SET is dropped; only ADD goes."""
         item, client = make_item()
-        item.count = 99           # dirty — would normally generate SET #count = :count
+        item.count = 99  # dirty — would normally generate SET #count = :count
         run(item.update(number_add={"count": 1}))
         kw = call_kwargs(client)
         expr = kw["UpdateExpression"]
@@ -484,11 +521,13 @@ class TestUpdateWithAtomicOps:
 
     def test_set_and_remove_and_add_in_one_expression(self):
         item, client = make_item()
-        run(item.update(
-            list_append={"keys": ["d"]},   # SET
-            list_remove={"keys": 0},       # REMOVE
-            number_add={"count": 1},       # ADD
-        ))
+        run(
+            item.update(
+                list_append={"keys": ["d"]},  # SET
+                list_remove={"keys": 0},  # REMOVE
+                number_add={"count": 1},  # ADD
+            )
+        )
         kw = call_kwargs(client)
         expr = kw["UpdateExpression"]
         assert "SET" in expr
@@ -499,6 +538,7 @@ class TestUpdateWithAtomicOps:
 # ---------------------------------------------------------------------------
 # update() with the explicit `set` kwarg
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateWithSetKwarg:
     def test_set_emits_plain_set_clause(self):

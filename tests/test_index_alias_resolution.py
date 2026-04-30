@@ -17,7 +17,6 @@ from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig
 from dynamojo.index import Gsi, IndexList, IndexMap, TableIndex
 
-
 _table_index = TableIndex(name="table", partitionkey="PK", sortkey="SK")
 _gsi0 = Gsi(name="gsi0", partitionkey="gsi0_pk", sortkey="gsi0_sk")
 _gsi1 = Gsi(name="gsi1", partitionkey="gsi1_pk", sortkey="gsi1_sk")
@@ -228,3 +227,138 @@ class TestInstanceUpdateWithAliasResolution:
         kw = update_kwargs(client)
         assert "ADD #count :_na_count" in kw["UpdateExpression"]
         assert item.count == 4
+
+
+# ===========================================================================
+# ConditionExpression / FilterExpression — alias canonicalization
+#
+# Without this, conditions targeting an alias would silently fail closed
+# under store_aliases=False (the alias attribute isn't on the row), and
+# only "happen to work" under store_aliases=True due to dual-writing.
+# Translation makes the behavior intentional rather than coincidental.
+# ===========================================================================
+
+
+class TestConditionExpressionAliasCanonicalization:
+    def test_resolver_returns_canonical_for_alias(self):
+        Model, _ = make_model()
+        # `user_id` aliases `gsi0_pk` — canonical form is the underlying key.
+        assert Model._resolve_alias_to_canonical("user_id") == "gsi0_pk"
+
+    def test_resolver_passes_non_aliased_through(self):
+        Model, _ = make_model()
+        assert Model._resolve_alias_to_canonical("count") == "count"
+
+    def test_resolver_picks_first_target_when_alias_maps_to_multiple(self):
+        """Iteration order of _index_aliases follows IndexMap declaration order,
+        so the GSI declared first wins — deterministic, table-key-first when
+        the table key shares the alias."""
+        Model, _ = make_model(double_alias_pk=True)
+        # Both gsi0_pk and gsi1_pk alias `user_id`. gsi0 was declared first.
+        assert Model._resolve_alias_to_canonical("user_id") == "gsi0_pk"
+
+    def test_condition_expression_translates_alias_to_underlying(self):
+        from boto3.dynamodb.conditions import Attr
+
+        Model, client = make_model(store_aliases=False)
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"name": "Alice"},
+                ConditionExpression=Attr("user_id").eq("u-42"),
+            )
+        )
+        kw = update_kwargs(client)
+        # The alias `user_id` must be translated to `gsi0_pk` in the condition
+        names = kw["ExpressionAttributeNames"]
+        # The condition placeholder should map to the physical key, not the alias
+        condition_targeted_names = {
+            v for k, v in names.items() if k.startswith("#condition_attribute_name")
+        }
+        assert "gsi0_pk" in condition_targeted_names
+        assert "user_id" not in condition_targeted_names
+
+    def test_condition_expression_works_with_store_aliases_true(self):
+        """With store_aliases=True the prior behavior 'happened to work' by
+        coincidence; the translation makes it intentional."""
+        from boto3.dynamodb.conditions import Attr
+
+        Model, client = make_model(store_aliases=True)
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"name": "Alice"},
+                ConditionExpression=Attr("user_id").eq("u-42"),
+            )
+        )
+        kw = update_kwargs(client)
+        names = kw["ExpressionAttributeNames"]
+        condition_targeted_names = {
+            v for k, v in names.items() if k.startswith("#condition_attribute_name")
+        }
+        assert "gsi0_pk" in condition_targeted_names
+
+    def test_condition_expression_non_aliased_passthrough(self):
+        from boto3.dynamodb.conditions import Attr
+
+        Model, client = make_model()
+        run(
+            Model.update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"count": 1},
+                ConditionExpression=Attr("name").eq("Alice"),
+            )
+        )
+        kw = update_kwargs(client)
+        names = kw["ExpressionAttributeNames"]
+        condition_targeted_names = {
+            v for k, v in names.items() if k.startswith("#condition_attribute_name")
+        }
+        assert condition_targeted_names == {"name"}
+
+    def test_delete_by_key_condition_translates_alias(self):
+        from boto3.dynamodb.conditions import Attr
+
+        Model, client = make_model(store_aliases=False)
+        run(
+            Model.delete_by_key(
+                "eid-1",
+                "sk-1",
+                ConditionExpression=Attr("user_id").eq("u-42"),
+            )
+        )
+        kw = client.delete_item.call_args.kwargs
+        names = kw["ExpressionAttributeNames"]
+        condition_targeted_names = {
+            v for k, v in names.items() if k.startswith("#condition_attribute_name")
+        }
+        assert "gsi0_pk" in condition_targeted_names
+        assert "user_id" not in condition_targeted_names
+
+    def test_filter_expression_in_query_translates_alias(self):
+        """FilterExpressions in queries go through the same code path."""
+        from boto3.dynamodb.conditions import Attr, Key
+
+        Model, client = make_model()
+        client.query.return_value = {
+            "Items": [],
+            "Count": 0,
+            "ScannedCount": 0,
+            "ResponseMetadata": {},
+        }
+        run(
+            Model.query(
+                KeyConditionExpression=Key("entity_id").eq("eid-1"),
+                FilterExpression=Attr("user_id").eq("u-42"),
+            )
+        )
+        kw = client.query.call_args.kwargs
+        names = kw["ExpressionAttributeNames"]
+        filter_targeted_names = {
+            v for k, v in names.items() if k.startswith("#attribute_name")
+        }
+        assert "gsi0_pk" in filter_targeted_names
+        assert "user_id" not in filter_targeted_names

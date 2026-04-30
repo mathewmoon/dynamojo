@@ -21,7 +21,6 @@ from .config import DynamojoConfig
 from .exceptions import StaticAttributeError, IndexNotFoundError
 from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
 
-
 # ---------------------------------------------------------------------------
 # Dict-path helpers — shared by standalone methods and make_update_opts.
 #
@@ -29,6 +28,7 @@ from .utils import Delta, TYPE_SERIALIZER, TYPE_DESERIALIZER
 # from path separators.  Use only attribute names that do not contain literal
 # dots — which is strongly recommended by DynamoDB conventions anyway.
 # ---------------------------------------------------------------------------
+
 
 def _dict_path_names(field_name: str, path: str) -> tuple[dict, str]:
     """Return (ExpressionAttributeNames, expression_path) for a dot-separated path.
@@ -291,6 +291,16 @@ class DynamojoBase(BaseModel, ABC):
                     raw_exp.attribute_name_placeholders[placeholder] = partitionkey
                 if len(attribute_names) == 2 and attr == attribute_names[1]:
                     raw_exp.attribute_name_placeholders[placeholder] = index.sortkey
+        else:
+            # Filter / Condition expressions: rewrite alias names to the
+            # underlying index key. Without this, conditions targeting an
+            # alias attribute fail closed under store_aliases=False (the
+            # alias attribute isn't on the row), and "happen to work" under
+            # store_aliases=True only by virtue of dual-writing.
+            for placeholder, attr in raw_exp.attribute_name_placeholders.items():
+                resolved = self._resolve_alias_to_canonical(attr)
+                if resolved != attr:
+                    raw_exp.attribute_name_placeholders[placeholder] = resolved
 
         for k, v in raw_exp.attribute_value_placeholders.items():
             raw_exp.attribute_value_placeholders[k] = TYPE_SERIALIZER.serialize(v)
@@ -635,6 +645,24 @@ class DynamojoBase(BaseModel, ABC):
         return self._config().dynamo_client.put_item(**opts)
 
     @classmethod
+    def _resolve_alias_to_canonical(cls, field: str) -> str:
+        """Return the canonical attribute name for a ConditionExpression.
+
+        If `field` is registered as an IndexMap alias, returns the first
+        underlying index attribute it maps to (iteration order of
+        `_index_aliases`, which follows IndexMap declaration order — so the
+        table key wins over GSI keys when both alias the same logical
+        field). Otherwise returns `field` unchanged.
+
+        Used to make condition / filter expressions target an attribute that
+        is actually stored on the row, regardless of `store_aliases`.
+        """
+        for index_key, alias in cls._config()._index_aliases.items():
+            if alias == field:
+                return index_key
+        return field
+
+    @classmethod
     def _resolve_alias_targets(cls, field: str) -> list[str]:
         """Translate a logical field name into the attribute names to write.
 
@@ -740,7 +768,7 @@ class DynamojoBase(BaseModel, ABC):
                 set_items.append(f"{expr_path} = {vk}")
 
         # dict_remove — list of flat "field.path" strings
-        for full_path in (dict_remove or []):
+        for full_path in dict_remove or []:
             field, _, path = full_path.partition(".")
             if not path:
                 raise ValueError(
@@ -755,7 +783,9 @@ class DynamojoBase(BaseModel, ABC):
             for target in cls._resolve_alias_targets(field):
                 attribute_names[f"#{target}"] = target
                 attribute_values[f":_ine_{target}"] = value
-                set_items.append(f"#{target} = if_not_exists(#{target}, :_ine_{target})")
+                set_items.append(
+                    f"#{target} = if_not_exists(#{target}, :_ine_{target})"
+                )
 
         return attribute_names, attribute_values, set_items, del_items, add_items
 
@@ -777,6 +807,7 @@ class DynamojoBase(BaseModel, ABC):
         # NOTE: `set` shadows the built-in inside this function — use the
         # builtins module if a real set() is ever needed below.
         import builtins
+
         atomic_fields = builtins.set(
             list(set or {})
             + list(list_append or {})
@@ -821,11 +852,18 @@ class DynamojoBase(BaseModel, ABC):
                 else:
                     del_statement_items.append(statement)
 
-        clauses = filter(None, [
-            f"SET {', '.join(set_statement_items)}" if set_statement_items else "",
-            f"REMOVE {', '.join(del_statement_items)}" if del_statement_items else "",
-            f"ADD {', '.join(add_statement_items)}" if add_statement_items else "",
-        ])
+        clauses = filter(
+            None,
+            [
+                f"SET {', '.join(set_statement_items)}" if set_statement_items else "",
+                (
+                    f"REMOVE {', '.join(del_statement_items)}"
+                    if del_statement_items
+                    else ""
+                ),
+                f"ADD {', '.join(add_statement_items)}" if add_statement_items else "",
+            ],
+        )
 
         opts["TableName"] = self._config().table
         opts["Key"] = self._build_key()
@@ -876,10 +914,19 @@ class DynamojoBase(BaseModel, ABC):
         At least one update-producing kwarg must be supplied (`set` or any of
         the atomic ops); a ConditionExpression alone is not a valid UpdateItem.
         """
-        if not any([
-            set, list_append, list_prepend, list_remove, list_set,
-            number_add, dict_set, dict_remove, set_if_not_exists,
-        ]):
+        if not any(
+            [
+                set,
+                list_append,
+                list_prepend,
+                list_remove,
+                list_set,
+                number_add,
+                dict_set,
+                dict_remove,
+                set_if_not_exists,
+            ]
+        ):
             raise ValueError(
                 "update_by_key requires at least one update-producing kwarg "
                 "(set, list_append, list_prepend, list_remove, list_set, "
@@ -904,11 +951,14 @@ class DynamojoBase(BaseModel, ABC):
             set_if_not_exists=set_if_not_exists,
         )
 
-        clauses = filter(None, [
-            f"SET {', '.join(set_items)}" if set_items else "",
-            f"REMOVE {', '.join(del_items)}" if del_items else "",
-            f"ADD {', '.join(add_items)}" if add_items else "",
-        ])
+        clauses = filter(
+            None,
+            [
+                f"SET {', '.join(set_items)}" if set_items else "",
+                f"REMOVE {', '.join(del_items)}" if del_items else "",
+                f"ADD {', '.join(add_items)}" if add_items else "",
+            ],
+        )
 
         opts["TableName"] = cls._config().table
         opts["Key"] = cls._build_key_from_args(pk, sk)
@@ -971,10 +1021,19 @@ class DynamojoBase(BaseModel, ABC):
         set_if_not_exists: dict[str, Any] | None = None,
         **opts,
     ):
-        has_atomic = any([
-            set, list_append, list_prepend, list_remove, list_set,
-            number_add, dict_set, dict_remove, set_if_not_exists,
-        ])
+        has_atomic = any(
+            [
+                set,
+                list_append,
+                list_prepend,
+                list_remove,
+                list_set,
+                number_add,
+                dict_set,
+                dict_remove,
+                set_if_not_exists,
+            ]
+        )
         diff = self._diff
         if not diff.hasChanged and not has_atomic:
             return None
@@ -1028,7 +1087,7 @@ class DynamojoBase(BaseModel, ABC):
                 _deep_set(new_val, path.split("."), value)
             self._sync_field(field, new_val)
         _dr_by_field: dict[str, list] = {}
-        for full_path in (dict_remove or []):
+        for full_path in dict_remove or []:
             field, _, path = full_path.partition(".")
             _dr_by_field.setdefault(field, []).append(path)
         for field, paths in _dr_by_field.items():
