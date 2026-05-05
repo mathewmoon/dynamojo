@@ -486,16 +486,25 @@ class DynamojoBase(BaseModel, ABC):
 
     def index_attributes(self) -> dict[str, Any]:
         """
-        Returns a dict containing index attributes as keys along with their set values
+        Returns a dict containing index attributes as keys along with their set values.
+
+        When ``drop_null_index_keys`` is enabled (the default), an index key is
+        omitted whenever its source alias resolves to None — preventing NULL
+        from being written into a sparse-index attribute. The alias attribute
+        itself is unaffected and continues to flow through ``_db_item()`` via
+        ``model_dump()``; only the underlying index key is suppressed.
         """
+        drop_nulls = self._config().drop_null_index_keys
         indexes = {}
         for mapping in self._config().index_maps:
             if hasattr(mapping, "partitionkey"):
-                indexes[mapping.index.partitionkey] = self.__getattribute__(
-                    mapping.partitionkey
-                )
+                val = self.__getattribute__(mapping.partitionkey)
+                if val is not None or not drop_nulls:
+                    indexes[mapping.index.partitionkey] = val
             if hasattr(mapping, "sortkey"):
-                indexes[mapping.index.sortkey] = self.__getattribute__(mapping.sortkey)
+                val = self.__getattribute__(mapping.sortkey)
+                if val is not None or not drop_nulls:
+                    indexes[mapping.index.sortkey] = val
         return indexes
 
     def item(self) -> dict[str, Any]:
@@ -682,6 +691,18 @@ class DynamojoBase(BaseModel, ABC):
         return targets
 
     @classmethod
+    def _is_index_key(cls, target: str) -> bool:
+        """True iff ``target`` names an underlying DynamoDB index key.
+
+        Aliases and ordinary model fields return False; only the names that
+        appear as keys of ``_index_aliases`` (i.e., the actual index-key
+        attribute names like ``gsi0_pk``) qualify. Used to gate the
+        null-drop behaviour: a NULL on an index key is what blows up sparse
+        validation, while a NULL on the alias is harmless.
+        """
+        return target in cls._config()._index_keys
+
+    @classmethod
     def _build_atomic_update_clauses(
         cls,
         set: dict[str, Any] | None = None,
@@ -710,11 +731,19 @@ class DynamojoBase(BaseModel, ABC):
         del_items: list[str] = []
         add_items: list[str] = []
 
-        # `set` — plain top-level field assignment ("SET #f = :_set_f")
+        # `set` — plain top-level field assignment ("SET #f = :_set_f").
+        # When drop_null_index_keys is enabled and value is None, any target
+        # that is an index key is rewritten as a REMOVE; non-index targets
+        # (the alias itself, ordinary fields) still SET to NULL so that an
+        # explicit user-facing null is preserved on the row.
+        drop_nulls = cls._config().drop_null_index_keys
         for field, value in (set or {}).items():
             coerced = Decimal(str(value)) if isinstance(value, float) else value
             for target in cls._resolve_alias_targets(field):
                 attribute_names[f"#{target}"] = target
+                if value is None and drop_nulls and cls._is_index_key(target):
+                    del_items.append(f"#{target}")
+                    continue
                 attribute_values[f":_set_{target}"] = coerced
                 set_items.append(f"#{target} = :_set_{target}")
 
@@ -781,6 +810,11 @@ class DynamojoBase(BaseModel, ABC):
 
         for field, value in (set_if_not_exists or {}).items():
             for target in cls._resolve_alias_targets(field):
+                # if_not_exists(idx_key, NULL) is incoherent on a sparse index;
+                # drop the index-key target entirely. Non-index targets keep
+                # the (admittedly silly) original behaviour.
+                if value is None and drop_nulls and cls._is_index_key(target):
+                    continue
                 attribute_names[f"#{target}"] = target
                 attribute_values[f":_ine_{target}"] = value
                 set_items.append(
@@ -808,7 +842,11 @@ class DynamojoBase(BaseModel, ABC):
         # builtins module if a real set() is ever needed below.
         import builtins
 
-        atomic_fields = builtins.set(
+        # Expand each user-supplied atomic-op key into the full set of
+        # underlying targets (alias → index keys, plus the alias itself when
+        # store_aliases=True) so the diff path below correctly recognises that
+        # those attributes are already accounted for.
+        atomic_field_names = (
             list(set or {})
             + list(list_append or {})
             + list(list_prepend or {})
@@ -819,9 +857,16 @@ class DynamojoBase(BaseModel, ABC):
             + [fp.partition(".")[0] for fp in (dict_remove or [])]
             + list(set_if_not_exists or {})
         )
+        atomic_fields = builtins.set()
+        for f in atomic_field_names:
+            atomic_fields.update(self._resolve_alias_targets(f))
 
-        diff = self._diff
-        diff_set_items = {**diff.added, **diff.changed}
+        # ``_deepdiff`` (vs ``_diff``) inspects ``_db_item()`` and so observes
+        # changes to derived attributes — index keys and joined attributes —
+        # not just the raw model fields. Without this, mutating an alias and
+        # calling bare ``update()`` would leave the underlying index key stale
+        # on the row.
+        diff = self._deepdiff
 
         (
             attribute_names,
@@ -841,16 +886,21 @@ class DynamojoBase(BaseModel, ABC):
             set_if_not_exists=set_if_not_exists,
         )
 
-        # diff-based SET/REMOVE — skip fields covered by an atomic op
-        for attr, val in self._db_item().items():
-            if attr in diff.keys and attr not in atomic_fields:
-                attribute_names[f"#{attr}"] = attr
-                attribute_values[f":{attr}"] = val
-                if attr in diff_set_items.keys():
-                    statement = f"#{attr} = :{attr}"
-                    set_statement_items.append(statement)
-                else:
-                    del_statement_items.append(statement)
+        # diff-based SET/REMOVE — skip fields covered by an atomic op.
+        # Iterate ``diff.keys`` rather than ``_db_item()`` so that an attribute
+        # which has *vanished* from the new state (e.g. an index key elided
+        # under drop_null_index_keys) actually gets a REMOVE clause instead of
+        # being silently passed over.
+        new_db_item = self._db_item()
+        for attr in diff.keys:
+            if attr in atomic_fields:
+                continue
+            attribute_names[f"#{attr}"] = attr
+            if attr in new_db_item:
+                attribute_values[f":{attr}"] = new_db_item[attr]
+                set_statement_items.append(f"#{attr} = :{attr}")
+            else:
+                del_statement_items.append(f"#{attr}")
 
         clauses = filter(
             None,
@@ -1034,7 +1084,7 @@ class DynamojoBase(BaseModel, ABC):
                 set_if_not_exists,
             ]
         )
-        diff = self._diff
+        diff = self._deepdiff
         if not diff.hasChanged and not has_atomic:
             return None
 

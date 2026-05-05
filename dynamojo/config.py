@@ -2,7 +2,7 @@
 from typing import List, Dict
 
 import boto3
-from pydantic import BaseModel, PrivateAttr, Field
+from pydantic import BaseModel, ConfigDict, PrivateAttr, Field
 
 from .index import IndexList, IndexMap, Mutator
 
@@ -41,14 +41,20 @@ class DynamojoConfig(BaseModel):
     # out before storing in the db
     store_aliases: bool = True
 
+    # When True (default), write operations elide index-key attributes whose
+    # source alias resolves to None — so that sparse-index validation does not
+    # complain about NULL values. Non-index-key attributes (including the alias
+    # itself) are untouched: an explicit ``foo = None`` still serialises as a
+    # NULL on the row. Set to False to let writes proceed unaltered, so
+    # developers face the consequences of writing NULL into a sparse-index key.
+    drop_null_index_keys: bool = True
+
     # Dict of `index key: alias name`
     _index_aliases: dict = PrivateAttr(default={})
 
     _index_keys: List[str] = PrivateAttr(default={})
 
-    class Config:
-        arbitrary_types_allowed = True
-        extra = "allow"
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

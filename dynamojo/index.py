@@ -2,7 +2,7 @@
 from collections import UserDict
 from typing import List, Callable, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import boto3
 
@@ -11,9 +11,7 @@ class Mutator(BaseModel):
     source: str
     callable: Callable[[str, Any, object], Any]
 
-    class Config:
-        frozen = True
-        arbitrary_types_allowed: True
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
 
 class Index:
