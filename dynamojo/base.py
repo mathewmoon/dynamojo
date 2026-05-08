@@ -199,7 +199,7 @@ class DynamojoBase(BaseModel, ABC):
         Takes attribute names defined in self._config().joined_attributes and stores them with the values
         of the corresponding attributes concatenated by JoinedAttribute.separator.
         """
-        item = super().__getattribute__("dict")()
+        item = super().__getattribute__("model_dump")()
         joiner = super().__getattribute__("_config")().__joined_attributes__[name]
         sources = joiner.fields
         separator = joiner.separator
