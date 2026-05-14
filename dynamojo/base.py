@@ -635,6 +635,21 @@ class DynamojoBase(BaseModel, ABC):
             else:
                 opts["ConditionExpression"] = fail_expression
 
+        # DynamoDB's PutItem rejects empty ``ExpressionAttributeNames``
+        # / ``ExpressionAttributeValues`` maps with ``ValidationException:
+        # ExpressionAttributeValues must not be empty``. The merge above
+        # pulls these maps wholesale from ``_get_raw_condition_expression``'s
+        # output — which always initialises both as ``{}`` and populates
+        # them only when the rendered boto3 ``ConditionBase`` carries
+        # placeholders. A value-free condition (``Attr("x").not_exists()``)
+        # therefore leaves an empty ``ExpressionAttributeValues`` in the
+        # kwargs and DDB refuses the request. Strip empty maps here so
+        # the value-free condition shape works without forcing every
+        # caller to know the boto3 quirk.
+        for key in ("ExpressionAttributeNames", "ExpressionAttributeValues"):
+            if key in opts and not opts[key]:
+                opts.pop(key)
+
         return opts
 
     async def save(
