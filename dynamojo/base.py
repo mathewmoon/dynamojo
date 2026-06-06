@@ -950,7 +950,9 @@ class DynamojoBase(BaseModel, ABC):
                 exp=condition_expression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            opts["ExpressionAttributeNames"].update(
+                exp.get("ExpressionAttributeNames", {})
+            )
             if "ExpressionAttributeValues" in exp:
                 opts.setdefault("ExpressionAttributeValues", {}).update(
                     exp["ExpressionAttributeValues"]
@@ -1045,7 +1047,9 @@ class DynamojoBase(BaseModel, ABC):
                 exp=ConditionExpression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            opts["ExpressionAttributeNames"].update(
+                exp.get("ExpressionAttributeNames", {})
+            )
             if "ExpressionAttributeValues" in exp:
                 opts.setdefault("ExpressionAttributeValues", {}).update(
                     exp["ExpressionAttributeValues"]
@@ -1257,7 +1261,9 @@ class DynamojoBase(BaseModel, ABC):
                 exp=condition_expression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            opts["ExpressionAttributeNames"].update(
+                exp.get("ExpressionAttributeNames", {})
+            )
             if "ExpressionAttributeValues" in exp:
                 opts.setdefault("ExpressionAttributeValues", {}).update(
                     exp["ExpressionAttributeValues"]

@@ -16,7 +16,6 @@ from dynamojo.base import DynamojoBase
 from dynamojo.config import DynamojoConfig
 from dynamojo.index import Gsi, IndexList, IndexMap, TableIndex
 
-
 _table_index = TableIndex(name="table", partitionkey="PK", sortkey="SK")
 _gsi0 = Gsi(name="gsi0", partitionkey="gsi0_pk", sortkey="gsi0_sk")
 _indexes = IndexList(_table_index, _gsi0)
