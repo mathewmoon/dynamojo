@@ -348,6 +348,10 @@ class DynamojoBase(BaseModel, ABC):
 
         opts["TableName"] = self._config().table
 
+        for key in ("ExpressionAttributeNames", "ExpressionAttributeValues"):
+            if not opts[key]:
+                del opts[key]
+
         return opts
 
     @classmethod
@@ -578,10 +582,10 @@ class DynamojoBase(BaseModel, ABC):
                 exp=FilterExpression, expression_type="FilterExpression"
             )
             opts["ExpressionAttributeNames"].update(
-                filter_opts.pop("ExpressionAttributeNames")
+                filter_opts.pop("ExpressionAttributeNames", {})
             )
             opts["ExpressionAttributeValues"].update(
-                filter_opts.pop("ExpressionAttributeValues")
+                filter_opts.pop("ExpressionAttributeValues", {})
             )
             opts.update(filter_opts)
 
@@ -946,10 +950,11 @@ class DynamojoBase(BaseModel, ABC):
                 exp=condition_expression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
-            opts.setdefault("ExpressionAttributeValues", {}).update(
-                exp["ExpressionAttributeValues"]
-            )
+            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            if "ExpressionAttributeValues" in exp:
+                opts.setdefault("ExpressionAttributeValues", {}).update(
+                    exp["ExpressionAttributeValues"]
+                )
             opts["ConditionExpression"] = exp["ConditionExpression"]
 
         return opts
@@ -1040,10 +1045,11 @@ class DynamojoBase(BaseModel, ABC):
                 exp=ConditionExpression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
-            opts.setdefault("ExpressionAttributeValues", {}).update(
-                exp["ExpressionAttributeValues"]
-            )
+            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            if "ExpressionAttributeValues" in exp:
+                opts.setdefault("ExpressionAttributeValues", {}).update(
+                    exp["ExpressionAttributeValues"]
+                )
             opts["ConditionExpression"] = exp["ConditionExpression"]
 
         return cls._config().dynamo_client.update_item(**opts)
@@ -1251,10 +1257,11 @@ class DynamojoBase(BaseModel, ABC):
                 exp=condition_expression,
                 expression_type="ConditionExpression",
             )
-            opts["ExpressionAttributeNames"].update(exp["ExpressionAttributeNames"])
-            opts.setdefault("ExpressionAttributeValues", {}).update(
-                exp["ExpressionAttributeValues"]
-            )
+            opts["ExpressionAttributeNames"].update(exp.get("ExpressionAttributeNames", {}))
+            if "ExpressionAttributeValues" in exp:
+                opts.setdefault("ExpressionAttributeValues", {}).update(
+                    exp["ExpressionAttributeValues"]
+                )
             opts["ConditionExpression"] = exp["ConditionExpression"]
         self._config().dynamo_client.update_item(**opts)
 
