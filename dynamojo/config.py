@@ -20,7 +20,7 @@ class DynamojoConfig(BaseModel):
     # attributes.
     convert_dynamodb_types: bool = Field(default=True)
     joined_attributes: List[JoinedAttribute]
-    __joined_attributes__: Dict = {}
+    __joined_attributes__: Dict
 
     # A list of database `Index` objects from `dynamojo.indexes.get_indexes()``
     indexes: IndexList
@@ -59,9 +59,9 @@ class DynamojoConfig(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        for attr in self.joined_attributes:
-            self.__joined_attributes__[attr.attribute] = attr
-
+        self.__joined_attributes__ = {
+            attr.attribute: attr for attr in self.joined_attributes
+        }
         for index_map in self.index_maps:
             if sk_att := index_map.sortkey:
                 self._index_aliases[index_map.index.sortkey] = sk_att
