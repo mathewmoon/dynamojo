@@ -248,6 +248,40 @@ class TestUpdateByKey:
         assert self._resolved(client) == "attribute_exists(PK)"
 
 
+class TestPutItemGuardIsPlaceholdered:
+    """``fail_on_exists`` composes rather than inlining raw attribute names.
+
+    Inlined key names break outright on a table keyed by a DynamoDB reserved
+    word, so the guard has to go through boto3's placeholdering like every other
+    condition.
+    """
+
+    def test_key_names_are_not_inlined(self):
+        item, client = make_item()
+        run(item.save())
+        kw = client.put_item.call_args.kwargs
+        cond = kw["ConditionExpression"]
+        assert "attribute_not_exists(PK)" not in cond
+        assert set(kw["ExpressionAttributeNames"].values()) >= {"PK", "SK"}
+
+    def test_guard_semantics_unchanged(self):
+        item, client = make_item()
+        run(item.save())
+        kw = client.put_item.call_args.kwargs
+        cond = kw["ConditionExpression"]
+        for ph, attr in sorted(
+            kw["ExpressionAttributeNames"].items(), key=lambda kv: -len(kv[0])
+        ):
+            cond = cond.replace(ph, attr)
+        assert cond == "(attribute_not_exists(PK) AND attribute_not_exists(SK))"
+
+    def test_empty_value_map_is_still_stripped(self):
+        """A value-free guard must not leave an empty map for DDB to reject."""
+        item, client = make_item()
+        run(item.save())
+        assert "ExpressionAttributeValues" not in client.put_item.call_args.kwargs
+
+
 class TestUnchangedPaths:
     def test_no_write_at_all_when_nothing_changed(self):
         item, client = make_item()

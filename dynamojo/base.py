@@ -619,26 +619,26 @@ class DynamojoBase(BaseModel, ABC):
 
         opts = {"TableName": self._config().table, "Item": item, **kwargs}
 
+        # Composed as a ConditionBase and ANDed with the caller's expression
+        # before rendering, so the guard shares one placeholder namespace with
+        # it and passes through the same alias resolver. Building the guard as
+        # raw text would inline the key names unplaceholdered, which DynamoDB
+        # rejects outright when a key is named after a reserved word.
+        if fail_on_exists:
+            guard = Attr(table_pk).not_exists()
+            if table_sk is not None:
+                guard = guard & Attr(table_sk).not_exists()
+            ConditionExpression = (
+                guard & ConditionExpression
+                if ConditionExpression is not None
+                else guard
+            )
+
         if ConditionExpression:
             exp = self._get_raw_condition_expression(
                 ConditionExpression, expression_type="ConditionExpression"
             )
             opts.update(exp)
-
-        if fail_on_exists:
-            sk_expression = f"attribute_not_exists({table_sk})"
-            pk_expression = f"attribute_not_exists({table_pk})"
-            fail_expression = (
-                f"({pk_expression} AND {sk_expression}) "
-                if table_sk is not None
-                else pk_expression
-            )
-            if ConditionExpression:
-                opts["ConditionExpression"] = (
-                    f"{fail_expression} AND {opts['ConditionExpression']}"
-                )
-            else:
-                opts["ConditionExpression"] = fail_expression
 
         # DynamoDB's PutItem rejects empty ``ExpressionAttributeNames``
         # / ``ExpressionAttributeValues`` maps with ``ValidationException:
