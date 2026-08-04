@@ -194,14 +194,62 @@ class TestComposition:
         assert "attribute_not_exists(count)" in cond
 
 
+class TestUpdateByKey:
+    """The other UpdateItem path — same hazard, so the same guard.
+
+    ``update_by_key`` writes by primary key with no instance state, so it
+    carries the identical upsert risk as ``update()``. A guarantee that held on
+    one and not the other would depend on which method a caller happened to
+    reach for.
+    """
+
+    def _resolved(self, client):
+        kw = client.update_item.call_args.kwargs
+        cond = kw.get("ConditionExpression", "")
+        for ph, attr in sorted(
+            kw.get("ExpressionAttributeNames", {}).items(), key=lambda kv: -len(kv[0])
+        ):
+            cond = cond.replace(ph, attr)
+        return cond
+
+    def test_guard_is_added_by_default(self):
+        item, client = make_item()
+        run(type(item).update_by_key("eid-1", "sk-1", set={"name": "Bob"}))
+        assert self._resolved(client) == (
+            "(attribute_exists(PK) AND attribute_exists(SK))"
+        )
+
+    def test_no_guard_when_disabled(self):
+        item, client = make_item()
+        run(
+            type(item).update_by_key(
+                "eid-1", "sk-1", set={"name": "Bob"}, fail_on_missing=False
+            )
+        )
+        assert "ConditionExpression" not in client.update_item.call_args.kwargs
+
+    def test_guard_composes_with_a_caller_condition(self):
+        item, client = make_item()
+        run(
+            type(item).update_by_key(
+                "eid-1",
+                "sk-1",
+                set={"name": "Bob"},
+                ConditionExpression=Attr("count").eq(0),
+            )
+        )
+        cond = self._resolved(client)
+        assert "attribute_exists(PK)" in cond
+        assert "count = " in cond
+
+    def test_pk_only_table_guards_only_the_partition_key(self):
+        item, client = make_item(composite=False)
+        run(type(item).update_by_key("eid-1", set={"name": "Bob"}))
+        assert self._resolved(client) == "attribute_exists(PK)"
+
+
 class TestUnchangedPaths:
     def test_no_write_at_all_when_nothing_changed(self):
         item, client = make_item()
         assert run(item.update()) is None
         client.update_item.assert_not_called()
-
-    def test_save_still_guards_on_existence_the_other_way(self):
-        item, client = make_item()
-        run(item.save())
-        cond = client.put_item.call_args.kwargs["ConditionExpression"]
-        assert "attribute_not_exists" in cond

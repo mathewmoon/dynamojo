@@ -317,7 +317,13 @@ class TestConditionExpressionAliasCanonicalization:
         condition_targeted_names = {
             v for k, v in names.items() if k.startswith("#condition_attribute_name")
         }
-        assert condition_targeted_names == {"name"}
+        # The default ``fail_on_missing`` guard also renders into the condition
+        # namespace, contributing the table key names. Subtracting them keeps
+        # this assertion strict about the alias behaviour under test — nothing
+        # beyond the guard and the caller's own attribute should appear.
+        guard_names = {"PK", "SK"}
+        assert condition_targeted_names - guard_names == {"name"}
+        assert guard_names <= condition_targeted_names
 
     def test_delete_by_key_condition_translates_alias(self):
         from boto3.dynamodb.conditions import Attr

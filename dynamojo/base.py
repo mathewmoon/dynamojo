@@ -1009,6 +1009,7 @@ class DynamojoBase(BaseModel, ABC):
         dict_remove: list[str] | None = None,
         set_if_not_exists: dict[str, Any] | None = None,
         ConditionExpression: ConditionBase | None = None,
+        fail_on_missing: bool = True,
         **opts,
     ) -> dict:
         """Issue a true DynamoDB UpdateItem identified by primary key.
@@ -1017,6 +1018,13 @@ class DynamojoBase(BaseModel, ABC):
         and conditionally-guarded mutations where only the key is in hand.
         At least one update-producing kwarg must be supplied (`set` or any of
         the atomic ops); a ConditionExpression alone is not a valid UpdateItem.
+
+        Args:
+            fail_on_missing: When True (the default) the write is conditioned on
+                the item already existing, so a key that names no row raises
+                ``ConditionalCheckFailedException`` instead of creating a
+                key-plus-SET-targets fragment. Matches ``update()``. Pass False
+                where upsert semantics are actually wanted.
         """
         if not any(
             [
@@ -1073,6 +1081,21 @@ class DynamojoBase(BaseModel, ABC):
             opts["ExpressionAttributeValues"] = {
                 k: TYPE_SERIALIZER.serialize(v) for k, v in attribute_values.items()
             }
+
+        # Same upsert hazard as ``update()`` — see the note on
+        # ``make_update_opts``. Composed before rendering so the guard and the
+        # caller's condition share one placeholder namespace and both pass
+        # through the alias resolver.
+        if fail_on_missing:
+            table_index = cls._config().indexes.table
+            guard = Attr(table_index.partitionkey).exists()
+            if table_index.sortkey is not None:
+                guard = guard & Attr(table_index.sortkey).exists()
+            ConditionExpression = (
+                guard & ConditionExpression
+                if ConditionExpression is not None
+                else guard
+            )
 
         if ConditionExpression is not None:
             exp = cls._get_raw_condition_expression(
