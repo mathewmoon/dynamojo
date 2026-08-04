@@ -63,7 +63,10 @@ class DynamojoConfig(BaseModel):
             attr.attribute: attr for attr in self.joined_attributes
         }
         for index_map in self.index_maps:
-            if sk_att := index_map.sortkey:
+            # ``IndexMap`` only assigns ``sortkey`` / ``partitionkey`` when one
+            # was supplied, so a partition-key-only table leaves the attribute
+            # absent rather than None. Both reads have to tolerate that.
+            if sk_att := getattr(index_map, "sortkey", None):
                 self._index_aliases[index_map.index.sortkey] = sk_att
             if getattr(index_map, "partitionkey", None):
                 self._index_aliases[index_map.index.partitionkey] = (
