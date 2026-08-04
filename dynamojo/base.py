@@ -9,6 +9,7 @@ from logging import getLogger
 from typing import Any
 
 from boto3.dynamodb.conditions import (
+    Attr,
     AttributeBase,
     ConditionBase,
     ConditionExpressionBuilder,
@@ -855,6 +856,7 @@ class DynamojoBase(BaseModel, ABC):
         dict_set: dict[str, Any] | None = None,
         dict_remove: list[str] | None = None,
         set_if_not_exists: dict[str, Any] | None = None,
+        fail_on_missing: bool = True,
         **opts,
     ):
         # NOTE: `set` shadows the built-in inside this function — use the
@@ -944,6 +946,36 @@ class DynamojoBase(BaseModel, ABC):
         }
         if serialized_values:
             opts["ExpressionAttributeValues"] = serialized_values
+
+        # UpdateItem upserts by default: absent a condition that a missing item
+        # cannot satisfy, DynamoDB creates a new item carrying only the key and
+        # the SET targets. That silently produces a partial row which fails
+        # model validation on the next read. A caller-supplied condition is no
+        # protection either — one built entirely from ``attribute_not_exists``
+        # arms is *satisfied* by a missing item, so the guard intended to
+        # prevent a lost update instead authorises a create.
+        #
+        # This is the counterpart to ``fail_on_exists`` on
+        # ``make_put_item_opts``: the two together mean a write states whether
+        # it expects the item to exist, rather than leaving it to whatever the
+        # caller's condition happens to imply.
+        #
+        # The guard is composed as a ``ConditionBase`` and ANDed with the
+        # caller's expression BEFORE rendering, so the whole thing goes through
+        # ``_get_raw_condition_expression`` once. Rendering the two separately
+        # would restart boto3's placeholder counter at ``#n0`` for each, and
+        # merging those name maps would silently clobber the caller's
+        # placeholders. Composing first also lets boto3 placeholder the key
+        # names, which a hand-built ``attribute_exists(PK)`` does not — that
+        # form breaks outright on a table keyed by a reserved word.
+        if fail_on_missing:
+            guard = Attr(pk_name).exists()
+            if sk_name is not None:
+                guard = guard & Attr(sk_name).exists()
+            supplied = opts.get("ConditionExpression")
+            opts["ConditionExpression"] = (
+                guard & supplied if supplied is not None else guard
+            )
 
         if condition_expression := opts.get("ConditionExpression"):
             exp = self._get_raw_condition_expression(
@@ -1094,8 +1126,18 @@ class DynamojoBase(BaseModel, ABC):
         dict_set: dict[str, Any] | None = None,
         dict_remove: list[str] | None = None,
         set_if_not_exists: dict[str, Any] | None = None,
+        fail_on_missing: bool = True,
         **opts,
     ):
+        """Write changed attributes back to the table with an UpdateItem.
+
+        Args:
+            fail_on_missing: When True (the default) the update is conditioned
+                on the item already existing, so a row deleted between load and
+                write raises ``ConditionalCheckFailedException`` instead of
+                being silently recreated as a key-plus-SET-targets fragment.
+                Pass False only when upsert semantics are actually wanted.
+        """
         has_atomic = any(
             [
                 set,
@@ -1132,6 +1174,7 @@ class DynamojoBase(BaseModel, ABC):
             dict_set=dict_set,
             dict_remove=dict_remove,
             set_if_not_exists=set_if_not_exists,
+            fail_on_missing=fail_on_missing,
             **opts,
         )
         self._config().dynamo_client.update_item(**opts)
